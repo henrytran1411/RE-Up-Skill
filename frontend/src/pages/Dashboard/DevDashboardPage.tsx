@@ -7,13 +7,13 @@ import { ContributionHistoryChart } from '../../components/ContributionHistoryCh
 import { EmployeeWorkStatusTag } from '../../components/EmployeeWorkStatusTag';
 import { LevelHistoryChart } from '../../components/LevelHistoryChart';
 import { LevelHistoryTimeline } from '../../components/LevelHistoryTimeline';
-import { ScoreSummaryCard } from '../../components/ScoreSummaryCard';
+import { PerformanceScoreChart } from '../../components/PerformanceScoreChart';
 import { SkillSuggestionsPanel } from '../../components/SkillSuggestionsPanel';
 import { createBenchLog, fetchMyBenchLogs, fetchMyIdleLearningAlert } from '../../services/benchService';
 import { fetchMyCertificateYearlySummary } from '../../services/certificateService';
 import { fetchMyContributionYearlySummary } from '../../services/contributionService';
 import { fetchMyLevelHistory, fetchMyProfile } from '../../services/employeeService';
-import { fetchMyEvaluations } from '../../services/evaluationService';
+import { fetchMyPerformanceScoreHistory } from '../../services/performanceService';
 import { fetchMySkillSuggestions } from '../../services/skillSuggestionService';
 import { fetchMyTechnicalPoint } from '../../services/technicalPointService';
 import { BenchLog, IdleLearningAlert } from '../../types/bench';
@@ -21,7 +21,7 @@ import { CertificateYearSummary } from '../../types/certificate';
 import { BenchActivityType } from '../../types/common';
 import { ContributionYearSummary } from '../../types/contribution';
 import { Employee, LevelHistoryEntry } from '../../types/employee';
-import { Evaluation } from '../../types/evaluation';
+import { PerformanceScorePeriod } from '../../types/performance';
 import { SkillGapSuggestion } from '../../types/skillSuggestion';
 import { TechnicalPointBreakdown } from '../../types/technicalPoint';
 
@@ -29,34 +29,34 @@ export function DevDashboardPage() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<Employee | null>(null);
   const [idleLearningAlert, setIdleLearningAlert] = useState<IdleLearningAlert | null>(null);
-  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [benchLogs, setBenchLogs] = useState<BenchLog[]>([]);
   const [technicalPoint, setTechnicalPoint] = useState<TechnicalPointBreakdown | null>(null);
   const [skillSuggestions, setSkillSuggestions] = useState<SkillGapSuggestion[]>([]);
   const [contributionSummary, setContributionSummary] = useState<ContributionYearSummary[]>([]);
   const [certificateSummary, setCertificateSummary] = useState<CertificateYearSummary[]>([]);
+  const [performanceHistory, setPerformanceHistory] = useState<PerformanceScorePeriod[]>([]);
   const [benchModalOpen, setBenchModalOpen] = useState(false);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [levelHistory, setLevelHistory] = useState<LevelHistoryEntry[]>([]);
   const [benchForm] = Form.useForm();
 
   const loadData = async () => {
-    const [me, myEvaluations, myBenchLogs, technical, suggestions, contribution, certificates, idleAlert] =
+    const [me, myBenchLogs, technical, suggestions, contribution, certificates, idleAlert, performance] =
       await Promise.all([
         fetchMyProfile(),
-        fetchMyEvaluations(),
         fetchMyBenchLogs(),
         fetchMyTechnicalPoint(),
         fetchMySkillSuggestions(),
         fetchMyContributionYearlySummary(),
         fetchMyCertificateYearlySummary(),
         fetchMyIdleLearningAlert(),
+        fetchMyPerformanceScoreHistory(),
       ]);
     setProfile(me);
-    setEvaluations(myEvaluations);
     setBenchLogs(myBenchLogs);
     setTechnicalPoint(technical);
     setSkillSuggestions(suggestions);
+    setPerformanceHistory(performance);
     setContributionSummary(contribution);
     setCertificateSummary(certificates);
     setIdleLearningAlert(idleAlert);
@@ -125,7 +125,9 @@ export function DevDashboardPage() {
         )}
 
         <Col span={24}>
-          <ScoreSummaryCard evaluation={evaluations[0] ?? null} />
+          <Card title="Performance Score by Half-Year (Technical Point + Contribution + Certificates)">
+            <PerformanceScoreChart periods={performanceHistory} />
+          </Card>
         </Col>
 
         <Col span={24}>

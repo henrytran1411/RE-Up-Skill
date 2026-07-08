@@ -33,12 +33,18 @@ import { fetchAllSkillLevels } from '../../services/skillLevelService';
 import { fetchAllTechnicalPoints } from '../../services/technicalPointService';
 import { fetchAllTaskScores, fetchTaskScoreHistoryForEmployee } from '../../services/taskScoreService';
 import { fetchProjectHistoryForEmployee } from '../../services/evaluationService';
+import {
+  fetchPerformanceScoreHistoryForEmployee,
+  snapshotPerformancePeriodForAllEmployees,
+  snapshotPerformancePeriodForEmployee,
+} from '../../services/performanceService';
 import { EmployeeWorkStatusTag } from '../../components/EmployeeWorkStatusTag';
 import { LevelHistoryTimeline } from '../../components/LevelHistoryTimeline';
 import { LevelHistoryChart } from '../../components/LevelHistoryChart';
 import { SkillPortfolioChart } from '../../components/SkillPortfolioChart';
 import { ProjectHistoryPanel } from '../../components/ProjectHistoryPanel';
 import { PointsHistoryChart } from '../../components/PointsHistoryChart';
+import { PerformanceScoreChart } from '../../components/PerformanceScoreChart';
 import { WorkloadHistoryChart } from '../../components/WorkloadHistoryChart';
 import { useAuth } from '../../context/AuthContext';
 import { Employee, LevelHistoryEntry } from '../../types/employee';
@@ -47,12 +53,14 @@ import { ProjectHistoryEntry } from '../../types/evaluation';
 import { SkillLevel } from '../../types/skillLevel';
 import { TechnicalPointBreakdown } from '../../types/technicalPoint';
 import { EmployeeTaskScore } from '../../types/taskScore';
+import { PerformanceScorePeriod } from '../../types/performance';
 import { Role, EMPLOYEE_LEVEL_NAMES } from '../../types/common';
 
 export function EmployeeListPage() {
   const { currentEmployee } = useAuth();
   const canManage = currentEmployee?.role === Role.HR || currentEmployee?.role === Role.ADMIN;
   const canDelete = currentEmployee?.role === Role.ADMIN;
+  const isAdmin = currentEmployee?.role === Role.ADMIN;
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [filters, setFilters] = useState<EmployeeSearchFilters>({});
@@ -68,6 +76,9 @@ export function EmployeeListPage() {
   const [technicalPoints, setTechnicalPoints] = useState<TechnicalPointBreakdown[]>([]);
   const [taskScores, setTaskScores] = useState<EmployeeTaskScore[]>([]);
   const [pointsHistory, setPointsHistory] = useState<EmployeeTaskScore[]>([]);
+  const [performanceHistory, setPerformanceHistory] = useState<PerformanceScorePeriod[]>([]);
+  const [snapshotting, setSnapshotting] = useState(false);
+  const [bulkSnapshotting, setBulkSnapshotting] = useState(false);
   const [form] = Form.useForm();
 
   const technicalPointByEmployeeId = new Map(technicalPoints.map((t) => [t.employeeId, t]));
@@ -148,18 +159,42 @@ export function EmployeeListPage() {
     setHistoryEmployee(employee);
     setHistoryLoading(true);
     try {
-      const [levels, skills, projects, points] = await Promise.all([
+      const [levels, skills, projects, points, performance] = await Promise.all([
         fetchEmployeeLevelHistory(employee.id),
         fetchSkillHistory({ employeeId: employee.id }),
         fetchProjectHistoryForEmployee(employee.id),
         fetchTaskScoreHistoryForEmployee(employee.id),
+        fetchPerformanceScoreHistoryForEmployee(employee.id),
       ]);
       setLevelHistory(levels);
       setSkillHistory(skills);
       setProjectHistory(projects);
       setPointsHistory(points);
+      setPerformanceHistory(performance);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const handleSnapshotCurrentPeriod = async () => {
+    if (!historyEmployee) return;
+    setSnapshotting(true);
+    try {
+      await snapshotPerformancePeriodForEmployee(historyEmployee.id);
+      message.success('Current period snapshotted');
+      setPerformanceHistory(await fetchPerformanceScoreHistoryForEmployee(historyEmployee.id));
+    } finally {
+      setSnapshotting(false);
+    }
+  };
+
+  const handleSnapshotAllEmployees = async () => {
+    setBulkSnapshotting(true);
+    try {
+      const { count } = await snapshotPerformancePeriodForAllEmployees();
+      message.success(`Snapshotted the current period for ${count} employees`);
+    } finally {
+      setBulkSnapshotting(false);
     }
   };
 
@@ -167,11 +202,22 @@ export function EmployeeListPage() {
     <Card
       title="Employees"
       extra={
-        canManage && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-            Add Employee
-          </Button>
-        )
+        <Space>
+          {isAdmin && (
+            <Popconfirm
+              title="Snapshot the current period for every employee?"
+              description="Freezes each employee's current half-year Performance Score. Safe to re-run before the period closes."
+              onConfirm={handleSnapshotAllEmployees}
+            >
+              <Button loading={bulkSnapshotting}>Snapshot Current Period (All Employees)</Button>
+            </Popconfirm>
+          )}
+          {canManage && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+              Add Employee
+            </Button>
+          )}
+        </Space>
       }
     >
       <Space style={{ marginBottom: 16 }} wrap>
@@ -393,6 +439,23 @@ export function EmployeeListPage() {
                 </>
               );
             })()}
+
+            <Divider />
+
+            <Typography.Title level={5}>
+              Performance Score by Half-Year
+              {isAdmin && (
+                <Button
+                  size="small"
+                  style={{ marginLeft: 12 }}
+                  loading={snapshotting}
+                  onClick={handleSnapshotCurrentPeriod}
+                >
+                  Snapshot Current Period
+                </Button>
+              )}
+            </Typography.Title>
+            <PerformanceScoreChart periods={performanceHistory} />
 
             <Divider />
 

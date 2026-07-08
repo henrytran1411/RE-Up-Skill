@@ -11,6 +11,7 @@ import { ProjectsModule } from './projects/projects.module';
 import { EvaluationsModule } from './evaluations/evaluations.module';
 import { ContributionModule } from './contribution/contribution.module';
 import { CertificatesModule } from './certificates/certificates.module';
+import { PerformanceModule } from './performance/performance.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -40,6 +41,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     EvaluationsModule,
     ContributionModule,
     CertificatesModule,
+    PerformanceModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
