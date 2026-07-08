@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+uploads/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local tool state
+.claude/
+.qodo/
