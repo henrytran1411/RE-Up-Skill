@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LoginPage } from '../pages/Login/LoginPage';
+import { MicrosoftCallbackPage } from '../pages/Login/MicrosoftCallbackPage';
 import { DashboardPage } from '../pages/Dashboard/DashboardPage';
 import { MyProjectsPage } from '../pages/Dashboard/MyProjectsPage';
 import { MySkillsPage } from '../pages/Dashboard/MySkillsPage';
@@ -24,6 +25,7 @@ export function AppRouter() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth/callback" element={<MicrosoftCallbackPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route element={<MainLayout />}>

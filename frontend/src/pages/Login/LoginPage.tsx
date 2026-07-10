@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Button, Card, Form, Input, Typography, Alert } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { Button, Card, Form, Input, Typography, Alert, Divider } from 'antd';
+import { WindowsOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { API_BASE_URL } from '../../services/apiClient';
 
 interface LoginFormValues {
   email: string;
@@ -11,7 +13,10 @@ interface LoginFormValues {
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const [error, setError] = useState<string | null>(
+    searchParams.get('error') === 'microsoft_login_failed' ? 'Sign-in with Microsoft failed. Please try again.' : null,
+  );
   const [loading, setLoading] = useState(false);
 
   const handleFinish = async (values: LoginFormValues) => {
@@ -47,6 +52,19 @@ export function LoginPage() {
             </Button>
           </Form.Item>
         </Form>
+        <Divider plain>or</Divider>
+        <Button
+          block
+          icon={<WindowsOutlined />}
+          onClick={() => {
+            globalThis.location.href = `${API_BASE_URL}/auth/microsoft`;
+          }}
+        >
+          Sign in with Microsoft
+        </Button>
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, textAlign: 'center', marginTop: 8, marginBottom: 0 }}>
+          First time signing in with Microsoft creates your account automatically.
+        </Typography.Paragraph>
       </Card>
     </div>
   );

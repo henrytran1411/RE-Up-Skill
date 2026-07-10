@@ -1,5 +1,10 @@
 import { createContext, ReactNode, useContext, useMemo, useState } from 'react';
-import { login as loginRequest, logout as logoutRequest, getStoredEmployee } from '../services/authService';
+import {
+  completeExternalLogin,
+  getStoredEmployee,
+  login as loginRequest,
+  logout as logoutRequest,
+} from '../services/authService';
 import { Role } from '../types/common';
 
 interface CurrentEmployee {
@@ -14,6 +19,7 @@ interface AuthContextValue {
   currentEmployee: CurrentEmployee | null;
   isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithToken: (accessToken: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -31,6 +37,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login: async (email, password) => {
         const response = await loginRequest(email, password);
         setCurrentEmployee(response.employee);
+      },
+      loginWithToken: async (accessToken) => {
+        const employee = await completeExternalLogin(accessToken);
+        setCurrentEmployee(employee);
       },
       logout: () => {
         logoutRequest();
