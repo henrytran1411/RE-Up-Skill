@@ -5,6 +5,7 @@ import { DashboardPage } from '../pages/Dashboard/DashboardPage';
 import { MyProjectsPage } from '../pages/Dashboard/MyProjectsPage';
 import { MySkillsPage } from '../pages/Dashboard/MySkillsPage';
 import { EmployeeListPage } from '../pages/Employees/EmployeeListPage';
+import { EmployeeCatalogsPage } from '../pages/Employees/EmployeeCatalogsPage';
 import { SkillsManagementPage } from '../pages/Skills/SkillsManagementPage';
 import { SkillCatalogPage } from '../pages/Skills/SkillCatalogPage';
 import { SkillCategoryPage } from '../pages/Skills/SkillCategoryPage';
@@ -40,6 +41,10 @@ export function AppRouter() {
               <Route path="/skills" element={<SkillsManagementPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute allowedRoles={[Role.HR, Role.ADMIN]} />}>
+              <Route path="/employee-catalogs" element={<EmployeeCatalogsPage />} />
             </Route>
 
             <Route element={<ProtectedRoute allowedRoles={SKILL_CATALOG_ROLES} />}>

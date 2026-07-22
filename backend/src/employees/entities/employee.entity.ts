@@ -6,7 +6,6 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { Role } from '../../common/enums/role.enum';
 import { EmployeeSkill } from '../../skills/entities/employee-skill.entity';
 import { BenchLog } from '../../bench-time/entities/bench-log.entity';
 import { TaskRecord } from '../../tasks/entities/task-record.entity';
@@ -30,8 +29,17 @@ export class Employee {
   @Column({ select: false })
   passwordHash: string;
 
-  @Column({ type: 'enum', enum: Role, default: Role.DEVELOPER })
-  role: Role;
+  /**
+   * Free text matching an EmployeeRole catalog entry's name (see
+   * employees/entities/employee-role.entity.ts), not a fixed enum — same
+   * pattern as `level` below. Note: the backend's actual permission checks
+   * (@Roles(...) decorators) stay hardcoded to the 5 canonical role strings
+   * ('developer'/'tech_lead'/'pm'/'hr'/'admin'); renaming or deleting one of
+   * those from the catalog breaks that person's real permissions, and a
+   * brand-new custom role has no permissions anywhere.
+   */
+  @Column({ type: 'varchar', length: 50, default: 'developer' })
+  role: string;
 
   /**
    * Overall career level — free text matching a SkillLevel catalog entry's

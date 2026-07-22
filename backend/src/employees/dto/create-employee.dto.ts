@@ -1,6 +1,4 @@
-import { IsDateString, IsEmail, IsEnum, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
-import { Role } from '../../common/enums/role.enum';
-import { EMPLOYEE_LEVEL_NAMES } from '../../common/enums/employee-level.enum';
+import { IsDateString, IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class CreateEmployeeDto {
   @IsString()
@@ -12,12 +10,13 @@ export class CreateEmployeeDto {
   @MinLength(8)
   password: string;
 
-  @IsEnum(Role)
+  /** A name from the EmployeeRole catalog (see /employee-roles). */
+  @IsString()
   @IsOptional()
-  role?: Role;
+  role?: string;
 
-  /** Overall career level — capped at Senior, distinct from per-skill level. */
-  @IsIn(EMPLOYEE_LEVEL_NAMES)
+  /** Overall career level — a name from the EmployeeLevel catalog (see /employee-levels), distinct from per-skill level. */
+  @IsString()
   level: string;
 
   @IsDateString()

@@ -1,6 +1,6 @@
 import { apiClient } from './apiClient';
 import { Employee, LevelHistoryEntry } from '../types/employee';
-import { EmployeeStatus, Role } from '../types/common';
+import { EmployeeStatus } from '../types/common';
 
 export async function fetchMyProfile(): Promise<Employee> {
   const { data } = await apiClient.get<Employee>('/employees/me');
@@ -20,7 +20,7 @@ export async function fetchEmployeeLevelHistory(employeeId: string): Promise<Lev
 export interface EmployeeSearchFilters {
   search?: string;
   level?: string;
-  role?: Role;
+  role?: string;
   status?: EmployeeStatus;
   isActive?: boolean;
 }
@@ -44,7 +44,8 @@ export interface CreateEmployeePayload {
   fullName: string;
   email: string;
   password: string;
-  role?: Role;
+  /** A name from the EmployeeRole catalog — see the Admin page's Employee Roles panel. */
+  role?: string;
   level: string;
   levelEffectiveDate: string;
   joinDate: string;

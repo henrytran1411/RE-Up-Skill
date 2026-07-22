@@ -1,10 +1,11 @@
-import { EmployeeStatus, LevelHistorySource, Role } from './common';
+import { EmployeeStatus, LevelHistorySource } from './common';
 
 export interface Employee {
   id: string;
   fullName: string;
   email: string;
-  role: Role;
+  /** Free text matching an EmployeeRole catalog entry's name — see the Admin page's Employee Roles panel. */
+  role: string;
   /** Free text matching a SkillLevel catalog entry's name (e.g. "Junior", "Senior", "Expert"). */
   level: string;
   levelEffectiveDate: string;

@@ -18,7 +18,7 @@ import {
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
-import { CloudSyncOutlined, LinkOutlined, FolderOutlined, TeamOutlined, PlusOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, LinkOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   fetchJiraConfig,
   upsertJiraConfig,
@@ -29,13 +29,14 @@ import {
   fetchJiraUsers,
   JiraSyncSummary,
 } from '../../services/jiraService';
-import { fetchAllEmployees, createEmployee, updateEmployee } from '../../services/employeeService';
+import { fetchAllEmployees, createEmployee } from '../../services/employeeService';
+import { fetchAllEmployeeLevels } from '../../services/employeeLevelService';
+import { fetchAllEmployeeRoles } from '../../services/employeeRoleService';
 import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../../types/jira';
 import { Employee } from '../../types/employee';
-import { Role } from '../../types/common';
+import { EmployeeLevel } from '../../types/employeeLevel';
+import { EmployeeRole } from '../../types/employeeRole';
 
-const EMPLOYEE_LEVEL_OPTIONS = ['Junior', 'Middle', 'Senior'].map((level) => ({ value: level, label: level }));
-const ROLE_OPTIONS = Object.values(Role).map((role) => ({ value: role, label: role }));
 const DEFAULT_TEMP_PASSWORD = 'Password123!';
 
 /** Jira display names here often carry an internal code prefix, e.g. "SMD172-My Pham" or "VT001 - Arthur Bonhomme". */
@@ -99,17 +100,21 @@ export function AdminPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [jiraUsers, setJiraUsers] = useState<JiraUserSummary[]>([]);
   const [loadingJiraUsers, setLoadingJiraUsers] = useState(false);
-  const [userSearchText, setUserSearchText] = useState('');
-  const [showServiceAccounts, setShowServiceAccounts] = useState(false);
-  const [mapSelections, setMapSelections] = useState<Record<string, string | undefined>>({});
-  const [mappingAccountId, setMappingAccountId] = useState<string | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createTargetUser, setCreateTargetUser] = useState<JiraUserSummary | null>(null);
   const [creatingEmployee, setCreatingEmployee] = useState(false);
   const [createForm] = Form.useForm();
 
+  const [employeeLevels, setEmployeeLevels] = useState<EmployeeLevel[]>([]);
+  const [employeeRoles, setEmployeeRoles] = useState<EmployeeRole[]>([]);
+
+  const employeeLevelOptions = employeeLevels.map((l) => ({ value: l.name, label: l.name }));
+  const employeeRoleOptions = employeeRoles.map((r) => ({ value: r.name, label: r.name }));
+
   const loadLogs = () => fetchJiraSyncLogs().then(setLogs);
   const loadEmployees = () => fetchAllEmployees().then(setEmployees);
+  const loadEmployeeLevels = () => fetchAllEmployeeLevels().then(setEmployeeLevels);
+  const loadEmployeeRoles = () => fetchAllEmployeeRoles().then(setEmployeeRoles);
 
   const loadJiraUsers = async () => {
     setLoadingJiraUsers(true);
@@ -142,10 +147,12 @@ export function AdminPage() {
       if (summary.configured) {
         loadProjects();
         loadJiraUsers();
-        loadEmployees();
       }
     });
     loadLogs();
+    loadEmployeeLevels();
+    loadEmployeeRoles();
+    loadEmployees();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -221,24 +228,6 @@ export function AdminPage() {
     }
   };
 
-  const handleMapUser = async (accountId: string) => {
-    const employeeId = mapSelections[accountId];
-    if (!employeeId) {
-      message.warning('Pick an employee first');
-      return;
-    }
-    setMappingAccountId(accountId);
-    try {
-      await updateEmployee(employeeId, { jiraAccountId: accountId });
-      message.success('Mapped');
-      await loadEmployees();
-    } catch (err) {
-      message.error(errorMessage(err, 'Failed to map employee'));
-    } finally {
-      setMappingAccountId(null);
-    }
-  };
-
   const openCreateModal = (user: JiraUserSummary) => {
     setCreateTargetUser(user);
     createForm.resetFields();
@@ -246,8 +235,8 @@ export function AdminPage() {
       fullName: stripCodePrefix(user.displayName),
       email: deriveCandidateEmail(user.displayName, config?.email?.split('@')[1] ?? ''),
       password: DEFAULT_TEMP_PASSWORD,
-      role: Role.DEVELOPER,
-      level: 'Junior',
+      role: employeeRoles[0]?.name,
+      level: employeeLevels[0]?.name,
       joinDate: dayjs(),
       levelEffectiveDate: dayjs(),
     });
@@ -274,13 +263,6 @@ export function AdminPage() {
       setCreatingEmployee(false);
     }
   };
-
-  const normalizedUserSearch = userSearchText.trim().toLowerCase();
-  const visibleJiraUsers = jiraUsers
-    .filter((user) => showServiceAccounts || user.accountType === 'atlassian')
-    .filter((user) => !normalizedUserSearch || user.displayName.toLowerCase().includes(normalizedUserSearch));
-  const mappedCount = visibleJiraUsers.filter((user) => employees.some((e) => e.jiraAccountId === user.accountId)).length;
-  const unmappedEmployees = employees.filter((e) => !e.jiraAccountId);
 
   const emailDomain = config?.email?.split('@')[1] ?? '';
   const existingEmails = new Set(employees.map((e) => e.email.toLowerCase()));
@@ -412,97 +394,14 @@ export function AdminPage() {
         <Card
           title={
             <Space>
-              <TeamOutlined />
-              Jira Users → Employees
+              <PlusOutlined />
+              Jira Users Needing an Employee Account
             </Space>
           }
           extra={
             <Button size="small" loading={loadingJiraUsers} onClick={loadJiraUsers}>
               Refresh Jira Users
             </Button>
-          }
-        >
-          <Typography.Paragraph type="secondary">
-            Map each Jira user to an existing employee (sets their Jira account ID), or create a new employee for one
-            that doesn't exist yet. Already-mapped users are shown for reference only.
-          </Typography.Paragraph>
-          <Space style={{ marginBottom: 12 }} wrap>
-            <Input.Search
-              placeholder="Search by name"
-              allowClear
-              style={{ width: 260 }}
-              value={userSearchText}
-              onChange={(e) => setUserSearchText(e.target.value)}
-            />
-            <Space align="center">
-              <Switch checked={showServiceAccounts} onChange={setShowServiceAccounts} />
-              <span>Show bot/service accounts</span>
-            </Space>
-            <Typography.Text type="secondary">
-              {visibleJiraUsers.length} shown — {mappedCount} already mapped, {visibleJiraUsers.length - mappedCount} unmapped
-            </Typography.Text>
-          </Space>
-          <Table
-            rowKey="accountId"
-            size="small"
-            loading={loadingJiraUsers}
-            dataSource={visibleJiraUsers}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              {
-                title: 'Jira user',
-                render: (_, user: JiraUserSummary) => (
-                  <Space>
-                    {user.displayName}
-                    {!user.active && <Tag>inactive</Tag>}
-                    {user.accountType !== 'atlassian' && <Tag color="default">{user.accountType}</Tag>}
-                  </Space>
-                ),
-              },
-              {
-                title: 'Mapping',
-                render: (_, user: JiraUserSummary) => {
-                  const mapped = employees.find((e) => e.jiraAccountId === user.accountId);
-                  if (mapped) {
-                    return <Tag color="success">Mapped: {mapped.fullName}</Tag>;
-                  }
-                  return (
-                    <Space>
-                      <Select
-                        placeholder="Pick employee"
-                        style={{ width: 200 }}
-                        showSearch
-                        optionFilterProp="label"
-                        value={mapSelections[user.accountId]}
-                        onChange={(value) => setMapSelections((prev) => ({ ...prev, [user.accountId]: value }))}
-                        options={unmappedEmployees.map((e) => ({ value: e.id, label: e.fullName }))}
-                      />
-                      <Button
-                        size="small"
-                        loading={mappingAccountId === user.accountId}
-                        onClick={() => handleMapUser(user.accountId)}
-                      >
-                        Map
-                      </Button>
-                      <Button size="small" icon={<PlusOutlined />} onClick={() => openCreateModal(user)}>
-                        Create New
-                      </Button>
-                    </Space>
-                  );
-                },
-              },
-            ]}
-          />
-        </Card>
-      )}
-
-      {config?.configured && (
-        <Card
-          title={
-            <Space>
-              <PlusOutlined />
-              Jira Users Needing an Employee Account
-            </Space>
           }
         >
           <Typography.Paragraph type="secondary">
@@ -578,10 +477,10 @@ export function AdminPage() {
           </Form.Item>
           <Space style={{ width: '100%' }}>
             <Form.Item name="role" label="Role" rules={[{ required: true }]}>
-              <Select style={{ width: 160 }} options={ROLE_OPTIONS} />
+              <Select style={{ width: 160 }} options={employeeRoleOptions} />
             </Form.Item>
             <Form.Item name="level" label="Level" rules={[{ required: true }]}>
-              <Select style={{ width: 140 }} options={EMPLOYEE_LEVEL_OPTIONS} />
+              <Select style={{ width: 140 }} options={employeeLevelOptions} />
             </Form.Item>
           </Space>
           <Space style={{ width: '100%' }}>

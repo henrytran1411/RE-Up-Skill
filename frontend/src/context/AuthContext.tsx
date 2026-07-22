@@ -5,13 +5,12 @@ import {
   login as loginRequest,
   logout as logoutRequest,
 } from '../services/authService';
-import { Role } from '../types/common';
-
 interface CurrentEmployee {
   id: string;
   fullName: string;
   email: string;
-  role: Role;
+  /** A name from the EmployeeRole catalog — compare against Role enum members for permission checks. */
+  role: string;
   level: string;
 }
 

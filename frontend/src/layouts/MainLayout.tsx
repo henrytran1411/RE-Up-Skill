@@ -1,5 +1,5 @@
 import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
-import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined, SettingOutlined } from '@ant-design/icons';
+import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined, SettingOutlined, IdcardOutlined } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { MANAGER_ROLES, Role } from '../types/common';
@@ -13,9 +13,10 @@ export function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const isManager = currentEmployee ? MANAGER_ROLES.includes(currentEmployee.role) : false;
-  const canManageSkillCatalog = currentEmployee ? SKILL_CATALOG_ROLES.includes(currentEmployee.role) : false;
+  const isManager = currentEmployee ? MANAGER_ROLES.includes(currentEmployee.role as Role) : false;
+  const canManageSkillCatalog = currentEmployee ? SKILL_CATALOG_ROLES.includes(currentEmployee.role as Role) : false;
   const isAdmin = currentEmployee?.role === Role.ADMIN;
+  const canManageEmployeeCatalogs = currentEmployee?.role === Role.HR || isAdmin;
 
   const menuItems = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
@@ -36,6 +37,9 @@ export function MainLayout() {
           { key: '/skill-categories', icon: <AppstoreOutlined />, label: 'Skill Categories' },
           { key: '/skill-levels', icon: <RiseOutlined />, label: 'Skill Levels' },
         ]
+      : []),
+    ...(canManageEmployeeCatalogs
+      ? [{ key: '/employee-catalogs', icon: <IdcardOutlined />, label: 'Employee Catalogs' }]
       : []),
     ...(isAdmin
       ? [

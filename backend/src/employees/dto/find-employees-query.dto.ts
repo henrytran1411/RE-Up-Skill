@@ -1,7 +1,5 @@
 import { IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
-import { Role } from '../../common/enums/role.enum';
 import { EmployeeStatus } from '../../common/enums/employee-status.enum';
-import { EMPLOYEE_LEVEL_NAMES } from '../../common/enums/employee-level.enum';
 
 export class FindEmployeesQueryDto {
   /** Matches against fullName or email, case-insensitive substring. */
@@ -9,13 +7,15 @@ export class FindEmployeesQueryDto {
   @IsString()
   search?: string;
 
+  /** A name from the EmployeeLevel catalog (see /employee-levels). */
   @IsOptional()
-  @IsIn(EMPLOYEE_LEVEL_NAMES)
+  @IsString()
   level?: string;
 
+  /** A name from the EmployeeRole catalog (see /employee-roles). */
   @IsOptional()
-  @IsEnum(Role)
-  role?: Role;
+  @IsString()
+  role?: string;
 
   /** Derived work status, not a DB column — filtered in-memory after computing it. */
   @IsOptional()

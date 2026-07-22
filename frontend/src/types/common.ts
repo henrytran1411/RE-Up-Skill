@@ -73,10 +73,3 @@ export enum ContributionSource {
 }
 
 export const MANAGER_ROLES = [Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN];
-
-/**
- * An employee's overall career level is capped at Senior — Expert/Master
- * exist only on the SkillLevel catalog for per-skill scoring, not for
- * career level. Matches backend common/enums/employee-level.enum.ts.
- */
-export const EMPLOYEE_LEVEL_NAMES = ['Junior', 'Middle', 'Senior'] as const;

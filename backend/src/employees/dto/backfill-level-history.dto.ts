@@ -1,9 +1,9 @@
-import { IsDateString, IsIn } from 'class-validator';
-import { EMPLOYEE_LEVEL_NAMES } from '../../common/enums/employee-level.enum';
+import { IsDateString, IsString } from 'class-validator';
 
 /** Inserts a historical predecessor row before the employee's earliest existing level-history record. */
 export class BackfillLevelHistoryDto {
-  @IsIn(EMPLOYEE_LEVEL_NAMES)
+  /** A name from the EmployeeLevel catalog (see /employee-levels). */
+  @IsString()
   level: string;
 
   @IsDateString()

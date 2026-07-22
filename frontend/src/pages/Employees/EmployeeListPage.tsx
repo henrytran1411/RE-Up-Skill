@@ -29,7 +29,8 @@ import {
   EmployeeSearchFilters,
 } from '../../services/employeeService';
 import { fetchSkillHistory } from '../../services/skillService';
-import { fetchAllSkillLevels } from '../../services/skillLevelService';
+import { fetchAllEmployeeLevels } from '../../services/employeeLevelService';
+import { fetchAllEmployeeRoles } from '../../services/employeeRoleService';
 import { fetchAllTechnicalPoints } from '../../services/technicalPointService';
 import { fetchAllTaskScores, fetchTaskScoreHistoryForEmployee } from '../../services/taskScoreService';
 import { fetchProjectHistoryForEmployee } from '../../services/evaluationService';
@@ -50,11 +51,12 @@ import { useAuth } from '../../context/AuthContext';
 import { Employee, LevelHistoryEntry } from '../../types/employee';
 import { EmployeeSkill } from '../../types/skill';
 import { ProjectHistoryEntry } from '../../types/evaluation';
-import { SkillLevel } from '../../types/skillLevel';
+import { EmployeeLevel } from '../../types/employeeLevel';
+import { EmployeeRole } from '../../types/employeeRole';
 import { TechnicalPointBreakdown } from '../../types/technicalPoint';
 import { EmployeeTaskScore } from '../../types/taskScore';
 import { PerformanceScorePeriod } from '../../types/performance';
-import { Role, EMPLOYEE_LEVEL_NAMES } from '../../types/common';
+import { Role } from '../../types/common';
 
 export function EmployeeListPage() {
   const { currentEmployee } = useAuth();
@@ -72,7 +74,8 @@ export function EmployeeListPage() {
   const [skillHistory, setSkillHistory] = useState<EmployeeSkill[]>([]);
   const [projectHistory, setProjectHistory] = useState<ProjectHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [skillLevels, setSkillLevels] = useState<SkillLevel[]>([]);
+  const [employeeLevels, setEmployeeLevels] = useState<EmployeeLevel[]>([]);
+  const [employeeRoles, setEmployeeRoles] = useState<EmployeeRole[]>([]);
   const [technicalPoints, setTechnicalPoints] = useState<TechnicalPointBreakdown[]>([]);
   const [taskScores, setTaskScores] = useState<EmployeeTaskScore[]>([]);
   const [pointsHistory, setPointsHistory] = useState<EmployeeTaskScore[]>([]);
@@ -83,10 +86,8 @@ export function EmployeeListPage() {
 
   const technicalPointByEmployeeId = new Map(technicalPoints.map((t) => [t.employeeId, t]));
   const taskScoreByEmployeeId = new Map(taskScores.map((t) => [t.employeeId, t]));
-  // Employee overall level is capped at Senior — Expert/Master are skill-level-only tiers.
-  const employeeLevelOptions = skillLevels
-    .filter((l) => (EMPLOYEE_LEVEL_NAMES as readonly string[]).includes(l.name))
-    .map((l) => ({ value: l.name, label: l.name }));
+  const employeeLevelOptions = employeeLevels.map((l) => ({ value: l.name, label: l.name }));
+  const employeeRoleOptions = employeeRoles.map((r) => ({ value: r.name, label: r.name }));
 
   const loadEmployees = async (nextFilters: EmployeeSearchFilters = filters) => {
     setLoading(true);
@@ -99,7 +100,8 @@ export function EmployeeListPage() {
 
   useEffect(() => {
     loadEmployees();
-    fetchAllSkillLevels().then(setSkillLevels);
+    fetchAllEmployeeLevels().then(setEmployeeLevels);
+    fetchAllEmployeeRoles().then(setEmployeeRoles);
     fetchAllTechnicalPoints().then(setTechnicalPoints);
     fetchAllTaskScores().then(setTaskScores);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -239,7 +241,7 @@ export function EmployeeListPage() {
           placeholder="Role"
           allowClear
           style={{ width: 140 }}
-          options={Object.values(Role).map((v) => ({ value: v, label: v }))}
+          options={employeeRoleOptions}
           onChange={(value) => applyFilters({ role: value })}
         />
       </Space>
@@ -337,8 +339,8 @@ export function EmployeeListPage() {
               <Input.Password />
             </Form.Item>
           )}
-          <Form.Item name="role" label="Role" initialValue={Role.DEVELOPER} rules={[{ required: true }]}>
-            <Select options={Object.values(Role).map((v) => ({ value: v, label: v }))} />
+          <Form.Item name="role" label="Role" initialValue={employeeRoles[0]?.name} rules={[{ required: true }]}>
+            <Select options={employeeRoleOptions} />
           </Form.Item>
           <Form.Item name="level" label="Level" rules={[{ required: true }]}>
             <Select options={employeeLevelOptions} />

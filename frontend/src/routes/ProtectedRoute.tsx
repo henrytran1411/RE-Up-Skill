@@ -13,7 +13,7 @@ export function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
     return <Navigate to="/login" replace />;
   }
 
-  if (allowedRoles && !allowedRoles.includes(currentEmployee.role)) {
+  if (allowedRoles && !allowedRoles.includes(currentEmployee.role as Role)) {
     return <Navigate to="/dashboard" replace />;
   }
 
