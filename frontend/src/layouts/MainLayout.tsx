@@ -1,5 +1,5 @@
 import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
-import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined, SettingOutlined } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { MANAGER_ROLES, Role } from '../types/common';
@@ -41,6 +41,7 @@ export function MainLayout() {
       ? [
           { key: '/contribution-records', icon: <TrophyOutlined />, label: 'Contribution Records' },
           { key: '/certificates', icon: <SafetyCertificateOutlined />, label: 'Certificates' },
+          { key: '/admin', icon: <SettingOutlined />, label: 'Admin' },
         ]
       : []),
   ];

@@ -1,16 +1,24 @@
-import { Card, Progress, Table, Space, Typography } from 'antd';
+import { Card, Pagination, Progress, Table, Space, Typography } from 'antd';
+import { useState } from 'react';
 import { ProjectHistoryEntry } from '../types/evaluation';
 
+const PROJECTS_PER_PAGE = 5;
+const TASKS_PER_PAGE = 10;
+
 export function ProjectHistoryPanel({ projects }: { projects: ProjectHistoryEntry[] }) {
+  const [page, setPage] = useState(1);
+
   if (projects.length === 0) {
     return <div style={{ color: '#999' }}>No project history yet.</div>;
   }
 
   const sorted = [...projects].sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const pageStart = (page - 1) * PROJECTS_PER_PAGE;
+  const pageItems = sorted.slice(pageStart, pageStart + PROJECTS_PER_PAGE);
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="large">
-      {sorted.map((project) => (
+      {pageItems.map((project) => (
         <Card
           key={project.projectName}
           size="small"
@@ -32,7 +40,9 @@ export function ProjectHistoryPanel({ projects }: { projects: ProjectHistoryEntr
           <Table
             rowKey="id"
             size="small"
-            pagination={false}
+            pagination={
+              project.tasks.length > TASKS_PER_PAGE ? { pageSize: TASKS_PER_PAGE, size: 'small' } : false
+            }
             dataSource={project.tasks}
             columns={[
               { title: 'Task', dataIndex: 'taskName' },
@@ -53,6 +63,18 @@ export function ProjectHistoryPanel({ projects }: { projects: ProjectHistoryEntr
           />
         </Card>
       ))}
+
+      {sorted.length > PROJECTS_PER_PAGE && (
+        <div style={{ textAlign: 'center' }}>
+          <Pagination
+            current={page}
+            pageSize={PROJECTS_PER_PAGE}
+            total={sorted.length}
+            onChange={setPage}
+            showSizeChanger={false}
+          />
+        </div>
+      )}
     </Space>
   );
 }

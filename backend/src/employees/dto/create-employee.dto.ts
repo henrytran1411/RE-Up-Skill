@@ -34,4 +34,9 @@ export class CreateEmployeeDto {
   @IsDateString()
   @IsOptional()
   availableFrom?: string;
+
+  /** Jira Cloud accountId this employee maps to, for the daily Jira task sync — see JiraService. */
+  @IsString()
+  @IsOptional()
+  jiraAccountId?: string;
 }

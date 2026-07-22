@@ -63,6 +63,17 @@ export class Employee {
   isActive: boolean;
 
   /**
+   * Jira Cloud accountId this employee maps to, for the daily task sync
+   * (see JiraService). Jira Cloud no longer exposes other users' email
+   * addresses over the REST API (privacy/GDPR change), so matching by
+   * email isn't reliable — accountId is the only stable identifier a
+   * plain API token can resolve for someone else's issues. Set once,
+   * manually, per employee; there's no way to derive it automatically.
+   */
+  @Column({ type: 'varchar', length: 100, nullable: true, unique: true })
+  jiraAccountId: string | null;
+
+  /**
    * Monthly salary, used to derive an hourly cost rate for ROI calculations.
    * Sensitive compensation data — excluded from normal queries (like
    * passwordHash) and only ever fetched via explicit addSelect for HR/Admin

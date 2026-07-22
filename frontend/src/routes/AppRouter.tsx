@@ -14,6 +14,7 @@ import { ProjectsPage } from '../pages/Projects/ProjectsPage';
 import { ContributionRecordsPage } from '../pages/Contribution/ContributionRecordsPage';
 import { MyCertificatesPage } from '../pages/Certificates/MyCertificatesPage';
 import { CertificatesPage } from '../pages/Certificates/CertificatesPage';
+import { AdminPage } from '../pages/Admin/AdminPage';
 import { MainLayout } from '../layouts/MainLayout';
 import { ProtectedRoute } from './ProtectedRoute';
 import { MANAGER_ROLES, Role } from '../types/common';
@@ -50,6 +51,7 @@ export function AppRouter() {
             <Route element={<ProtectedRoute allowedRoles={[Role.ADMIN]} />}>
               <Route path="/contribution-records" element={<ContributionRecordsPage />} />
               <Route path="/certificates" element={<CertificatesPage />} />
+              <Route path="/admin" element={<AdminPage />} />
             </Route>
           </Route>
         </Route>

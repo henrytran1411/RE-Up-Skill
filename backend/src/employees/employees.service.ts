@@ -90,6 +90,7 @@ export class EmployeesService {
       joinDate: dto.joinDate,
       currentProject: dto.currentProject ?? null,
       availableFrom: dto.availableFrom ?? null,
+      jiraAccountId: dto.jiraAccountId ?? null,
     });
 
     const saved = await this.employeeRepository.save(employee);
@@ -139,6 +140,16 @@ export class EmployeesService {
       .addSelect('employee.passwordHash')
       .where('employee.email = :email', { email })
       .getOne();
+  }
+
+  /** Plain email lookup — for matching an external identity (e.g. a Jira assignee) to an employee. */
+  findByEmail(email: string): Promise<Employee | null> {
+    return this.employeeRepository.findOne({ where: { email } });
+  }
+
+  /** Jira Cloud accountId lookup — see Employee.jiraAccountId and JiraService. */
+  findByJiraAccountId(jiraAccountId: string): Promise<Employee | null> {
+    return this.employeeRepository.findOne({ where: { jiraAccountId } });
   }
 
   /**

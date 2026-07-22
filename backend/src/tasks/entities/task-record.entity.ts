@@ -56,6 +56,10 @@ export class TaskRecord {
   @Column({ type: 'date', nullable: true })
   completedAt: string | null;
 
+  /** The Jira issue key (e.g. "ABC-123") this task was synced from — null for tasks created directly in this system. Unique so re-syncing updates rather than duplicates. */
+  @Column({ type: 'varchar', length: 50, nullable: true, unique: true })
+  jiraIssueKey: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
