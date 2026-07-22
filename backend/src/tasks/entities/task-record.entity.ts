@@ -9,6 +9,14 @@ import {
 } from 'typeorm';
 import { Employee } from '../../employees/entities/employee.entity';
 import { DecimalColumnTransformer } from '../../common/transformers/decimal.transformer';
+import { JsonArrayColumnTransformer } from '../../common/transformers/json-array.transformer';
+
+/** One Jira issue (usually a Bug) that blocks a task, captured from Jira's "is blocked by" issue links. */
+export interface BlockedByIssueRef {
+  key: string;
+  summary: string | null;
+  issueType: string | null;
+}
 
 @Entity('task_records')
 export class TaskRecord {
@@ -59,6 +67,14 @@ export class TaskRecord {
   /** The Jira issue key (e.g. "ABC-123") this task was synced from — null for tasks created directly in this system. Unique so re-syncing updates rather than duplicates. */
   @Column({ type: 'varchar', length: 50, nullable: true, unique: true })
   jiraIssueKey: string | null;
+
+  /** Jira issue type (e.g. "Task", "Bug", "Story") — captured from the synced issue's issuetype field. Null for tasks not created via Jira sync. */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  issueType: string | null;
+
+  /** Other Jira issues (usually bugs) that block this one — empty when none or not Jira-synced. */
+  @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
+  blockedByIssues: BlockedByIssueRef[];
 
   @CreateDateColumn()
   createdAt: Date;

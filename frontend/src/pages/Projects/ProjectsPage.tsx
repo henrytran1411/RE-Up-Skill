@@ -40,6 +40,8 @@ import {
 import { fetchTasksForProject, createTask, updateTask, deleteTask } from '../../services/taskService';
 import { fetchAllEmployees, setEmployeeSalary } from '../../services/employeeService';
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
+import { IssueTypeTag } from '../../components/IssueTypeTag';
+import { BlockedByTags } from '../../components/BlockedByTags';
 import {
   ProjectSummary,
   ProjectOverview,
@@ -468,6 +470,10 @@ export function ProjectsPage() {
                   dataSource={projectTasks}
                   columns={[
                     { title: 'Task', dataIndex: 'taskName' },
+                    {
+                      title: 'Type',
+                      render: (_, record: TaskWithEmployee) => <IssueTypeTag issueType={record.issueType} />,
+                    },
                     { title: 'Employee', render: (_, record: TaskWithEmployee) => record.employee.fullName },
                     { title: 'Estimate hrs', dataIndex: 'estimateHours' },
                     {
@@ -477,6 +483,10 @@ export function ProjectsPage() {
                     { title: 'Points', dataIndex: 'points' },
                     { title: 'Complexity', dataIndex: 'complexity' },
                     { title: 'Bugs', dataIndex: 'bugCount' },
+                    {
+                      title: 'Blocked By',
+                      render: (_, record: TaskWithEmployee) => <BlockedByTags blockedByIssues={record.blockedByIssues} />,
+                    },
                     {
                       title: 'PM Rating',
                       render: (_, record: TaskWithEmployee) => record.pmRating ?? '—',

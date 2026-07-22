@@ -19,6 +19,13 @@ export interface Evaluation {
   updatedAt: string;
 }
 
+/** One Jira issue (usually a Bug) that blocks a task, captured from Jira's "is blocked by" issue links. */
+export interface BlockedByIssueRef {
+  key: string;
+  summary: string | null;
+  issueType: string | null;
+}
+
 export interface TaskRecord {
   id: string;
   employeeId: string;
@@ -32,6 +39,11 @@ export interface TaskRecord {
   bugCount: number;
   completedAt: string | null;
   createdAt: string;
+  jiraIssueKey: string | null;
+  /** Jira issue type (e.g. "Task", "Bug", "Story") — null for tasks not created via Jira sync. */
+  issueType: string | null;
+  /** Other Jira issues (usually bugs) that block this one — empty when none or not Jira-synced. */
+  blockedByIssues: BlockedByIssueRef[];
 }
 
 /** What `GET /tasks/projects/:projectName/tasks` returns — a task with its assignee joined in. */

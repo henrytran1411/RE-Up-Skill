@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { TaskRecord } from '../tasks/entities/task-record.entity';
+import { TaskRecord, BlockedByIssueRef } from '../tasks/entities/task-record.entity';
 import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
@@ -27,8 +27,28 @@ interface JiraIssue {
     priority?: { name?: string };
     status?: { statusCategory?: { key?: string } };
     timetracking?: { originalEstimateSeconds?: number; timeSpentSeconds?: number };
+    issuetype?: { name?: string };
+    issuelinks?: JiraIssueLink[];
     [customField: string]: unknown;
   };
+}
+
+interface JiraLinkedIssueRef {
+  key: string;
+  fields?: { summary?: string; issuetype?: { name?: string } };
+}
+
+/**
+ * Jira represents a link's direction via its `type.inward`/`type.outward`
+ * labels — e.g. for the standard "Blocks" link type, `inward: "is blocked
+ * by"` and `outward: "blocks"`. An issue carrying `inwardIssue` in one of
+ * these applies the *inward* label to that relationship, so `inwardIssue`
+ * on a "Blocks" link is what blocks this issue (not the other way round).
+ */
+interface JiraIssueLink {
+  type?: { name?: string; inward?: string; outward?: string };
+  inwardIssue?: JiraLinkedIssueRef;
+  outwardIssue?: JiraLinkedIssueRef;
 }
 
 interface JiraSearchResponse {
@@ -313,6 +333,8 @@ export class JiraService {
       'priority',
       'status',
       'timetracking',
+      'issuetype',
+      'issuelinks',
       connection.storyPointsField,
     ].join(',');
     const authHeader = this.authHeader(connection);
@@ -338,6 +360,18 @@ export class JiraService {
       nextPageToken = page.nextPageToken;
     }
     return issues;
+  }
+
+  /** Jira issues that block this one — from "is blocked by" issue links (e.g. a Bug blocking a Task). See JiraIssueLink for the inward/outward direction convention. */
+  private findBlockingIssues(issue: JiraIssue): BlockedByIssueRef[] {
+    const links = issue.fields.issuelinks ?? [];
+    return links
+      .filter((link) => link.type?.inward?.toLowerCase().includes('blocked by') && link.inwardIssue)
+      .map((link) => ({
+        key: link.inwardIssue!.key,
+        summary: link.inwardIssue!.fields?.summary ?? null,
+        issueType: link.inwardIssue!.fields?.issuetype?.name ?? null,
+      }));
   }
 
   /** Maps one Jira issue to the fields TaskRecord cares about. Returns null fields where Jira has no real equivalent (bugCount, pmRating) rather than guessing. */
@@ -368,6 +402,8 @@ export class JiraService {
       points,
       completedAt,
       createdAt: new Date(issue.fields.created),
+      issueType: issue.fields.issuetype?.name ?? null,
+      blockedByIssues: this.findBlockingIssues(issue),
     };
   }
 
@@ -418,6 +454,8 @@ export class JiraService {
       complexity: mapped.complexity,
       points: mapped.points,
       completedAt: mapped.completedAt,
+      issueType: mapped.issueType,
+      blockedByIssues: mapped.blockedByIssues,
     };
 
     const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });

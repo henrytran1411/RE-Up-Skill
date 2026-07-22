@@ -1,6 +1,8 @@
 import { Card, Pagination, Progress, Table, Space, Typography } from 'antd';
 import { useState } from 'react';
-import { ProjectHistoryEntry } from '../types/evaluation';
+import { ProjectHistoryEntry, BlockedByIssueRef } from '../types/evaluation';
+import { IssueTypeTag } from './IssueTypeTag';
+import { BlockedByTags } from './BlockedByTags';
 
 const PROJECTS_PER_PAGE = 5;
 const TASKS_PER_PAGE = 10;
@@ -46,6 +48,11 @@ export function ProjectHistoryPanel({ projects }: { projects: ProjectHistoryEntr
             dataSource={project.tasks}
             columns={[
               { title: 'Task', dataIndex: 'taskName' },
+              {
+                title: 'Type',
+                dataIndex: 'issueType',
+                render: (v: string | null) => <IssueTypeTag issueType={v} />,
+              },
               { title: 'Points', dataIndex: 'points' },
               { title: 'Complexity', dataIndex: 'complexity' },
               { title: 'Est. hrs', dataIndex: 'estimateHours' },
@@ -53,6 +60,11 @@ export function ProjectHistoryPanel({ projects }: { projects: ProjectHistoryEntr
                 title: 'Actual hrs',
                 dataIndex: 'actualHours',
                 render: (v: number | null) => v ?? '—',
+              },
+              {
+                title: 'Blocked By',
+                dataIndex: 'blockedByIssues',
+                render: (v: BlockedByIssueRef[]) => <BlockedByTags blockedByIssues={v} />,
               },
               {
                 title: 'Status',
