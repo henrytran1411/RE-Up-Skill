@@ -13,6 +13,8 @@ export interface Employee {
   availableFrom: string | null;
   joinDate: string;
   isActive: boolean;
+  /** Jira Cloud accountId this employee maps to, for the Jira task/user sync — see the Admin page's Jira Integration section. */
+  jiraAccountId: string | null;
   /** Derived: ON_BENCH whenever currentProject is null. */
   status: EmployeeStatus;
   createdAt: string;

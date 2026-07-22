@@ -27,10 +27,22 @@ export class JiraController {
     return this.jiraService.listProjects();
   }
 
+  /** Every user the saved Jira account can see — populates the "Jira Users → Employees" mapping picker on the Admin page. */
+  @Get('users')
+  listUsers() {
+    return this.jiraService.listUsers();
+  }
+
   /** Triggers a sync of the selected project(s) now — there is no automatic/daily sync. */
   @Post('run')
   run() {
     return this.jiraService.syncTasksFromJira();
+  }
+
+  /** Ensures a Project row exists for every Jira project in scope — the project analog of run() above, for keeping the Projects list itself in sync. */
+  @Post('run-projects')
+  runProjects() {
+    return this.jiraService.syncProjectsFromJira();
   }
 
   /** Recent sync runs — the only visibility into what past manual syncs actually did. */

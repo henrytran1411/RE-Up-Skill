@@ -6,6 +6,7 @@ import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
 import { EmployeesService } from '../employees/employees.service';
+import { ProjectsService } from '../projects/projects.service';
 
 /**
  * The subset of a Jira REST API v3 `/search/jql` result we actually read.
@@ -48,6 +49,21 @@ export interface JiraProjectSummary {
   name: string;
 }
 
+interface JiraApiUser {
+  accountId: string;
+  displayName: string;
+  active: boolean;
+  accountType: string;
+}
+
+export interface JiraUserSummary {
+  accountId: string;
+  displayName: string;
+  active: boolean;
+  /** 'atlassian' = a real person; 'app'/'customer' etc. are bots/service accounts — surfaced so the Admin page can filter them out. */
+  accountType: string;
+}
+
 /** Resolved connection details for one sync run — always from the DB JiraConfig row (no env-var fallback). */
 interface JiraConnection {
   baseUrl: string;
@@ -85,6 +101,14 @@ export interface JiraSyncSummary {
   unmatchedAssignees: UnmatchedAssignee[];
 }
 
+export interface JiraProjectSyncSummary {
+  status: JiraSyncStatus;
+  projectsFetched: number;
+  projectsCreated: number;
+  projectsUpdated: number;
+  errorMessage: string | null;
+}
+
 /** Priority has no universal numeric scale in Jira — this is a judgment-call mapping, not a Jira standard. */
 const PRIORITY_TO_COMPLEXITY: Record<string, number> = {
   Highest: 5,
@@ -102,6 +126,7 @@ const DEFAULT_STORY_POINTS_FIELD = 'customfield_10016';
 
 const MAX_RESULTS_PER_PAGE = 100;
 const MAX_PROJECTS_PER_PAGE = 50;
+const MAX_USERS_PER_PAGE = 50;
 
 @Injectable()
 export class JiraService {
@@ -115,6 +140,7 @@ export class JiraService {
     @InjectRepository(JiraConfig)
     private readonly configRepository: Repository<JiraConfig>,
     private readonly employeesService: EmployeesService,
+    private readonly projectsService: ProjectsService,
   ) {}
 
   /** The stored config, if any, WITHOUT the token — for display in the Admin UI (see getConfigSummary for the masked public shape). */
@@ -234,6 +260,45 @@ export class JiraService {
       startAt += MAX_PROJECTS_PER_PAGE;
     }
     return projects;
+  }
+
+  /** Lists every Jira user the saved account can see — the picker behind the Admin page's "Jira Users → Employees" mapping. */
+  async listUsers(): Promise<JiraUserSummary[]> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before loading users.');
+    }
+
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    const authHeader = this.authHeader(connection);
+    const users: JiraUserSummary[] = [];
+    let startAt = 0;
+    for (;;) {
+      const params = new URLSearchParams({ startAt: String(startAt), maxResults: String(MAX_USERS_PER_PAGE) });
+      const response = await fetch(`${baseUrl}/rest/api/3/users/search?${params.toString()}`, {
+        headers: { Authorization: authHeader, Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`Jira user search failed (${response.status}): ${await response.text()}`);
+      }
+      const page = (await response.json()) as JiraApiUser[];
+      users.push(...page.map((u) => ({ accountId: u.accountId, displayName: u.displayName, active: u.active, accountType: u.accountType })));
+      if (page.length < MAX_USERS_PER_PAGE) {
+        break;
+      }
+      startAt += MAX_USERS_PER_PAGE;
+    }
+    return users;
+  }
+
+  /** The Jira projects currently in scope — every project the account can see when syncAllProjects is on, else just the ones picked on the Admin page. */
+  private async resolveScopedProjects(connection: JiraConnection): Promise<JiraProjectSummary[]> {
+    const allProjects = await this.fetchAllProjects(connection);
+    if (connection.syncAllProjects) {
+      return allProjects;
+    }
+    const selectedKeys = new Set(connection.projectKeys);
+    return allProjects.filter((project) => selectedKeys.has(project.key));
   }
 
   /** Paginates through every matching issue for one JQL query via the cursor-based /search/jql endpoint. */
@@ -481,6 +546,81 @@ export class JiraService {
       `Jira sync ${summary.status}: ${issues.length} fetched, ${tasksCreated} created, ${tasksUpdated} updated, ${tasksSkipped} skipped, ${summary.unmatchedAssignees.length} unmapped assignee(s)`,
     );
     await this.saveLog(startedAt, summary);
+    return summary;
+  }
+
+  private emptyProjectSyncSummary(status: JiraSyncStatus, errorMessage: string): JiraProjectSyncSummary {
+    return { status, projectsFetched: 0, projectsCreated: 0, projectsUpdated: 0, errorMessage };
+  }
+
+  /** Ensures a Project row exists for each fetched Jira project and tallies the outcomes — extracted purely to keep syncProjectsFromJira's own complexity down. */
+  private async upsertAllProjects(projects: JiraProjectSummary[]) {
+    let projectsCreated = 0;
+    let projectsUpdated = 0;
+    const errors: string[] = [];
+
+    for (const project of projects) {
+      try {
+        const existing = await this.projectsService.findByName(project.name);
+        await this.projectsService.upsertProject(project.name, {});
+        if (existing) {
+          projectsUpdated++;
+        } else {
+          projectsCreated++;
+        }
+      } catch (err) {
+        errors.push(`${project.key}: ${err instanceof Error ? err.message : 'unknown error'}`);
+      }
+    }
+
+    return { projectsCreated, projectsUpdated, errors };
+  }
+
+  /**
+   * Ensures a Project row exists (by name, matching the same free-text
+   * matching TaskRecord.projectName already relies on) for every Jira
+   * project in scope — the project analog of syncTasksFromJira above.
+   * Existing projects are left alone (no field changes), only newly-seen
+   * ones are created. Not logged to jira_sync_logs — that table's shape is
+   * task-specific — the result is only shown inline on the Admin page.
+   */
+  async syncProjectsFromJira(): Promise<JiraProjectSyncSummary> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      return this.emptyProjectSyncSummary(JiraSyncStatus.SKIPPED, 'Jira is not configured yet — set it up on the Admin page.');
+    }
+
+    let projects: JiraProjectSummary[];
+    try {
+      projects = await this.resolveScopedProjects(connection);
+    } catch (err) {
+      return this.emptyProjectSyncSummary(
+        JiraSyncStatus.FAILED,
+        err instanceof Error ? err.message : 'Unknown error fetching projects from Jira',
+      );
+    }
+
+    if (projects.length === 0) {
+      return this.emptyProjectSyncSummary(
+        JiraSyncStatus.SKIPPED,
+        connection.syncAllProjects
+          ? 'This Jira account has no projects.'
+          : 'No Jira projects selected — pick at least one project, or turn on "sync all projects", on the Admin page.',
+      );
+    }
+
+    const { projectsCreated, projectsUpdated, errors } = await this.upsertAllProjects(projects);
+
+    const summary: JiraProjectSyncSummary = {
+      status: errors.length === 0 ? JiraSyncStatus.SUCCESS : JiraSyncStatus.PARTIAL,
+      projectsFetched: projects.length,
+      projectsCreated,
+      projectsUpdated,
+      errorMessage: errors.length > 0 ? errors.slice(0, 20).join('; ') : null,
+    };
+    this.logger.log(
+      `Jira project sync ${summary.status}: ${projects.length} fetched, ${projectsCreated} created, ${projectsUpdated} updated`,
+    );
     return summary;
   }
 

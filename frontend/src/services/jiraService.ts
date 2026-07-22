@@ -1,5 +1,5 @@
 import { apiClient } from './apiClient';
-import { JiraConfigSummary, JiraProjectSummary, JiraSyncLog } from '../types/jira';
+import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../types/jira';
 
 export async function fetchJiraConfig(): Promise<JiraConfigSummary> {
   const { data } = await apiClient.get<JiraConfigSummary>('/jira-sync/config');
@@ -42,7 +42,17 @@ export async function runJiraSync(): Promise<JiraSyncSummary> {
   return data;
 }
 
+export async function runJiraProjectSync(): Promise<JiraProjectSyncSummary> {
+  const { data } = await apiClient.post<JiraProjectSyncSummary>('/jira-sync/run-projects', {});
+  return data;
+}
+
 export async function fetchJiraSyncLogs(): Promise<JiraSyncLog[]> {
   const { data } = await apiClient.get<JiraSyncLog[]>('/jira-sync/logs');
+  return data;
+}
+
+export async function fetchJiraUsers(): Promise<JiraUserSummary[]> {
+  const { data } = await apiClient.get<JiraUserSummary[]>('/jira-sync/users');
   return data;
 }

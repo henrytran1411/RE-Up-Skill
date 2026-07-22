@@ -51,6 +51,8 @@ export interface CreateEmployeePayload {
   currentProject?: string;
   /** Expected date this employee frees up from currentProject — for capacity planning. */
   availableFrom?: string;
+  /** Jira Cloud accountId this employee maps to — see the Admin page's Jira Integration section. */
+  jiraAccountId?: string;
 }
 
 /** Sensitive — HR/Admin only. Used to prefill the ROI screen's inline salary editor. */

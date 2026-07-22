@@ -104,6 +104,7 @@ export function ProjectsPage() {
   const [editingTask, setEditingTask] = useState<TaskWithEmployee | null>(null);
   const [savingTask, setSavingTask] = useState(false);
   const [taskForm] = Form.useForm();
+  const [searchText, setSearchText] = useState('');
 
   const loadProjects = () => fetchAllProjects().then(setProjects);
 
@@ -282,6 +283,15 @@ export function ProjectsPage() {
 
   const roiOverview = detail && hasRoiData(detail) ? detail : null;
 
+  const normalizedSearch = searchText.trim().toLowerCase();
+  const filteredProjects = normalizedSearch
+    ? projects.filter(
+        (project) =>
+          project.projectName.toLowerCase().includes(normalizedSearch) ||
+          (project.managerName ?? '').toLowerCase().includes(normalizedSearch),
+      )
+    : projects;
+
   return (
     <Card
       title="Projects"
@@ -293,10 +303,17 @@ export function ProjectsPage() {
         )
       }
     >
+      <Input.Search
+        placeholder="Search by project name or manager"
+        allowClear
+        style={{ marginBottom: 16, maxWidth: 360 }}
+        value={searchText}
+        onChange={(e) => setSearchText(e.target.value)}
+      />
       <Table
         rowKey="projectName"
         loading={loading}
-        dataSource={projects}
+        dataSource={filteredProjects}
         columns={[
           { title: 'Project', dataIndex: 'projectName' },
           { title: 'Status', render: (_, record: ProjectSummary) => <ProjectStatusTag status={record.status} /> },

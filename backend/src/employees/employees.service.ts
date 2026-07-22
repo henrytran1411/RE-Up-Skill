@@ -78,6 +78,12 @@ export class EmployeesService {
     if (existing) {
       throw new ConflictException('An employee with this email already exists');
     }
+    if (dto.jiraAccountId) {
+      const jiraCollision = await this.findByJiraAccountId(dto.jiraAccountId);
+      if (jiraCollision) {
+        throw new ConflictException(`This Jira account is already mapped to ${jiraCollision.fullName}`);
+      }
+    }
 
     const passwordHash = await bcrypt.hash(dto.password, SALT_ROUNDS);
     const employee = this.employeeRepository.create({
@@ -164,6 +170,13 @@ export class EmployeesService {
    */
   async update(id: string, dto: UpdateEmployeeDto, actingUserId: string): Promise<EmployeeWithStatus> {
     const previous = await this.findOne(id);
+
+    if (dto.jiraAccountId) {
+      const jiraCollision = await this.findByJiraAccountId(dto.jiraAccountId);
+      if (jiraCollision && jiraCollision.id !== id) {
+        throw new ConflictException(`This Jira account is already mapped to ${jiraCollision.fullName}`);
+      }
+    }
 
     await this.employeeRepository.update(id, dto);
 
