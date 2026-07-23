@@ -7,9 +7,15 @@ import { JiraService } from './jira.service';
 import { JiraController } from './jira.controller';
 import { EmployeesModule } from '../employees/employees.module';
 import { ProjectsModule } from '../projects/projects.module';
+import { TasksModule } from '../tasks/tasks.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([TaskRecord, JiraSyncLog, JiraConfig]), EmployeesModule, ProjectsModule],
+  imports: [
+    TypeOrmModule.forFeature([TaskRecord, JiraSyncLog, JiraConfig]),
+    EmployeesModule,
+    ProjectsModule,
+    TasksModule,
+  ],
   controllers: [JiraController],
   providers: [JiraService],
   exports: [JiraService],

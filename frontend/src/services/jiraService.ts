@@ -35,10 +35,20 @@ export interface JiraSyncSummary {
   tasksSkipped: number;
   errorMessage: string | null;
   unmatchedAssignees: { accountId: string; displayName: string; issueCount: number }[];
+  /** Set only by runJiraSingleProjectSync — how many rows got a fresh taskCode afterward. */
+  taskCodesAssigned?: number;
+  /** Set only by runJiraSingleProjectSync — employee accounts auto-created for previously-unmatched assignees. Each has the default temp password and a best-effort guessed email — review before handing out. */
+  employeesCreated?: { fullName: string; email: string }[];
 }
 
 export async function runJiraSync(): Promise<JiraSyncSummary> {
   const { data } = await apiClient.post<JiraSyncSummary>('/jira-sync/run', {});
+  return data;
+}
+
+/** Syncs exactly one Jira project by key, independent of the stored project selection, then recomputes taskCode for every issue in it. */
+export async function runJiraSingleProjectSync(projectKey: string): Promise<JiraSyncSummary> {
+  const { data } = await apiClient.post<JiraSyncSummary>(`/jira-sync/run/${encodeURIComponent(projectKey)}`, {});
   return data;
 }
 

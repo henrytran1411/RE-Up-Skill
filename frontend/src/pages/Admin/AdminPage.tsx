@@ -25,6 +25,7 @@ import {
   upsertJiraConfig,
   fetchJiraProjects,
   runJiraSync,
+  runJiraSingleProjectSync,
   runJiraProjectSync,
   fetchJiraSyncLogs,
   fetchJiraUsers,
@@ -103,6 +104,9 @@ export function AdminPage() {
   const [syncingProjects, setSyncingProjects] = useState(false);
   const [projectSyncResult, setProjectSyncResult] = useState<JiraProjectSyncSummary | null>(null);
   const [logs, setLogs] = useState<JiraSyncLog[]>([]);
+  const [singleProjectKey, setSingleProjectKey] = useState<string | undefined>(undefined);
+  const [syncingSingleProject, setSyncingSingleProject] = useState(false);
+  const [singleProjectSyncResult, setSingleProjectSyncResult] = useState<JiraSyncSummary | null>(null);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [jiraUsers, setJiraUsers] = useState<JiraUserSummary[]>([]);
@@ -256,6 +260,31 @@ export function AdminPage() {
       message.error(errorMessage(err, 'Failed to sync projects'));
     } finally {
       setSyncingProjects(false);
+    }
+  };
+
+  const handleSyncSingleProject = async () => {
+    if (!singleProjectKey) return;
+    setSyncingSingleProject(true);
+    setSingleProjectSyncResult(null);
+    try {
+      const result = await runJiraSingleProjectSync(singleProjectKey);
+      setSingleProjectSyncResult(result);
+      if (result.status === 'failed') {
+        message.error(`Sync failed: ${result.errorMessage}`);
+      } else {
+        message.success(
+          `Sync ${result.status}: ${result.tasksCreated} created, ${result.tasksUpdated} updated, ${result.tasksSkipped} skipped, ${result.taskCodesAssigned ?? 0} task code(s) assigned`,
+        );
+      }
+      loadLogs();
+      if (selectedHierarchyProject) {
+        handleSelectHierarchyProject(selectedHierarchyProject);
+      }
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to sync this project'));
+    } finally {
+      setSyncingSingleProject(false);
     }
   };
 
@@ -417,6 +446,63 @@ export function AdminPage() {
                 Sync Projects
               </Button>
             </Space>
+
+            <Typography.Title level={5} style={{ marginTop: 24 }}>
+              Sync One Project
+            </Typography.Title>
+            <Typography.Paragraph type="secondary">
+              Pull every task for every member of a single Jira project right now — independent of the selection
+              above. Any assignee with no matching employee gets a Developer/Junior account auto-created (guessed
+              email, default temp password <code>{DEFAULT_TEMP_PASSWORD}</code> — review these before handing them
+              out) so their tasks are picked up in the same run, skipping only bots/inactive Jira accounts.
+              Epic/User Story/Task/Bug/Sub-task issues are then given a matching taskCode (Epic-1, US-1.1,
+              Task-1.1.1, Bug-1.1.1.1, SubTask-1.1.1.1) based on their Jira creation order.
+            </Typography.Paragraph>
+            <Space>
+              <Select
+                showSearch
+                placeholder="Select a Jira project"
+                style={{ width: 320 }}
+                value={singleProjectKey}
+                onChange={setSingleProjectKey}
+                options={projects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+                optionFilterProp="label"
+              />
+              <Button
+                type="primary"
+                icon={<CloudSyncOutlined />}
+                loading={syncingSingleProject}
+                disabled={!singleProjectKey}
+                onClick={handleSyncSingleProject}
+              >
+                Sync This Project
+              </Button>
+            </Space>
+            {singleProjectSyncResult && (
+              <Alert
+                style={{ marginTop: 12 }}
+                type={singleProjectSyncResult.status === 'failed' ? 'error' : 'success'}
+                showIcon
+                message={`${singleProjectSyncResult.status}: ${singleProjectSyncResult.issuesFetched} fetched, ${singleProjectSyncResult.tasksCreated} created, ${singleProjectSyncResult.tasksUpdated} updated, ${singleProjectSyncResult.tasksSkipped} skipped, ${singleProjectSyncResult.employeesCreated?.length ?? 0} employee(s) auto-created, ${singleProjectSyncResult.taskCodesAssigned ?? 0} task code(s) assigned`}
+                description={
+                  <Space direction="vertical" size="small">
+                    {singleProjectSyncResult.errorMessage && <span>{singleProjectSyncResult.errorMessage}</span>}
+                    {singleProjectSyncResult.employeesCreated && singleProjectSyncResult.employeesCreated.length > 0 && (
+                      <div>
+                        <strong>Auto-created (Developer/Junior, password {DEFAULT_TEMP_PASSWORD} — review emails):</strong>
+                        <ul style={{ marginBottom: 0 }}>
+                          {singleProjectSyncResult.employeesCreated.map((e) => (
+                            <li key={e.email}>
+                              {e.fullName} — {e.email}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </Space>
+                }
+              />
+            )}
           </>
         )}
       </Card>

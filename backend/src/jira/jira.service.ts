@@ -7,6 +7,7 @@ import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
 import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
+import { TaskCodeService } from '../tasks/task-code.service';
 
 /**
  * The subset of a Jira REST API v3 `/search/jql` result we actually read.
@@ -121,6 +122,10 @@ export interface JiraSyncSummary {
   errorMessage: string | null;
   /** Assignees seen this run with no Employee.jiraAccountId mapped to them — map these via PATCH /employees/:id, then re-run. */
   unmatchedAssignees: UnmatchedAssignee[];
+  /** Set only by a single-project sync — how many TaskRecord rows got a fresh Epic-1/US-1.1/Task-1.1.1-style taskCode afterward. */
+  taskCodesAssigned?: number;
+  /** Set only by a single-project sync — employee accounts auto-created for previously-unmatched assignees, so their tasks could be synced in the same run. Each has the default temp password and a best-effort guessed email — review before handing out. */
+  employeesCreated?: { fullName: string; email: string }[];
 }
 
 export interface JiraProjectSyncSummary {
@@ -150,6 +155,9 @@ const MAX_RESULTS_PER_PAGE = 100;
 const MAX_PROJECTS_PER_PAGE = 50;
 const MAX_USERS_PER_PAGE = 50;
 
+/** Same default the Admin page's "Quick Create" flow uses — meant to be handed to the person and changed, not kept. */
+const DEFAULT_AUTO_CREATED_PASSWORD = 'Password123!';
+
 @Injectable()
 export class JiraService {
   private readonly logger = new Logger(JiraService.name);
@@ -163,6 +171,7 @@ export class JiraService {
     private readonly configRepository: Repository<JiraConfig>,
     private readonly employeesService: EmployeesService,
     private readonly projectsService: ProjectsService,
+    private readonly taskCodeService: TaskCodeService,
   ) {}
 
   /** The stored config, if any, WITHOUT the token — for display in the Admin UI (see getConfigSummary for the masked public shape). */
@@ -496,6 +505,98 @@ export class JiraService {
     }
   }
 
+  /** Jira display names here often carry an internal code prefix, e.g. "SMD172-My Pham" or "VT001 - Arthur Bonhomme" — mirrors the Admin page's own helper. */
+  private stripCodePrefix(displayName: string): string {
+    return displayName.replace(/^[A-Za-z]{2,}\d+\s*-\s*/, '').trim();
+  }
+
+  /**
+   * Jira Cloud doesn't return other users' real email over the REST API
+   * (privacy restriction) — this is a best-effort guess from the display
+   * name and the connected account's own email domain, same heuristic the
+   * Admin page's "Quick Create" flow uses. Not a fact — review before
+   * treating it as real contact info.
+   */
+  private deriveCandidateEmail(displayName: string, domain: string): string {
+    const asciiName = this.stripCodePrefix(displayName)
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .toLowerCase();
+    const words = asciiName
+      .replace(/[^a-z0-9\s]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (words.length === 0) return '';
+    const [firstWord, ...rest] = words;
+    const localPart = rest.length > 0 ? `${firstWord}.${rest.join('')}` : firstWord;
+    return `${localPart}@${domain}`;
+  }
+
+  /**
+   * Auto-provisions an Employee account (Developer/Junior, the same default
+   * temp password the Admin page's "Quick Create" button uses) for each
+   * unmatched assignee that's an active, real Jira Cloud person (not a
+   * bot/service account) — so a single-project sync can pick up their
+   * tasks in the same run instead of needing a separate manual mapping
+   * step. Guessed email collisions or any other create failure just skip
+   * that one (it stays in unmatchedAssignees) rather than guessing harder.
+   */
+  private async autoCreateEmployeesForUnmatched(
+    unmatchedAssignees: UnmatchedAssignee[],
+    connection: JiraConnection,
+  ): Promise<{ fullName: string; email: string }[]> {
+    if (unmatchedAssignees.length === 0) {
+      return [];
+    }
+    const domain = connection.email.split('@')[1];
+    if (!domain) {
+      return [];
+    }
+
+    let jiraUsers: JiraUserSummary[];
+    try {
+      jiraUsers = await this.listUsers();
+    } catch (err) {
+      this.logger.warn(`Could not verify Jira users for auto-create: ${err instanceof Error ? err.message : err}`);
+      return [];
+    }
+    const jiraUserByAccountId = new Map(jiraUsers.map((u) => [u.accountId, u]));
+
+    const created: { fullName: string; email: string }[] = [];
+    const joinDate = new Date().toISOString().slice(0, 10);
+
+    for (const assignee of unmatchedAssignees) {
+      const jiraUser = jiraUserByAccountId.get(assignee.accountId);
+      if (!jiraUser || !jiraUser.active || jiraUser.accountType !== 'atlassian') {
+        continue; // bot/service account/inactive/unknown — don't guess an account into existence
+      }
+      const fullName = this.stripCodePrefix(assignee.displayName);
+      const email = this.deriveCandidateEmail(assignee.displayName, domain);
+      if (!fullName || !email) {
+        continue;
+      }
+      try {
+        await this.employeesService.create({
+          fullName,
+          email,
+          password: DEFAULT_AUTO_CREATED_PASSWORD,
+          role: 'developer',
+          level: 'Junior',
+          levelEffectiveDate: joinDate,
+          joinDate,
+          jiraAccountId: assignee.accountId,
+        });
+        created.push({ fullName, email });
+      } catch (err) {
+        this.logger.warn(
+          `Auto-create skipped for "${assignee.displayName}" (${email}): ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    return created;
+  }
+
   /**
    * Upserts one issue into task_records, matched by jiraIssueKey —
    * re-running a sync updates existing rows instead of duplicating. Returns
@@ -652,11 +753,20 @@ export class JiraService {
       return summary;
     }
 
+    const { summary } = await this.fetchAndSyncIssues(issues, connection);
+    this.logger.log(
+      `Jira sync ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped, ${summary.unmatchedAssignees.length} unmapped assignee(s)`,
+    );
+    await this.saveLog(startedAt, summary);
+    return summary;
+  }
+
+  /** Shared by syncTasksFromJira and syncSingleProjectFromJira: upserts `issues` (already fetched) and builds the resulting summary, without logging/saving — callers do that themselves since their log messages differ. */
+  private async fetchAndSyncIssues(issues: JiraIssue[], connection: JiraConnection): Promise<{ summary: JiraSyncSummary }> {
     const { tasksCreated, tasksUpdated, tasksSkipped, issueErrors, unmatched } = await this.syncAllIssues(
       issues,
       connection.storyPointsField,
     );
-
     const summary: JiraSyncSummary = {
       status: issueErrors.length === 0 ? JiraSyncStatus.SUCCESS : JiraSyncStatus.PARTIAL,
       issuesFetched: issues.length,
@@ -666,8 +776,81 @@ export class JiraService {
       errorMessage: issueErrors.length > 0 ? issueErrors.slice(0, 20).join('; ') : null,
       unmatchedAssignees: Array.from(unmatched.values()),
     };
+    return { summary };
+  }
+
+  /**
+   * Syncs exactly one Jira project by key — independent of the Admin page's
+   * stored projectKeys/syncAllProjects selection, for a one-off "pull this
+   * project now" action.
+   *
+   * If any issue's assignee has no Employee.jiraAccountId mapped, this
+   * auto-creates a Developer/Junior account for each one that's an active,
+   * real Jira Cloud person (skipping bots/service accounts and anyone the
+   * guessed email collides with) — see autoCreateEmployeesForUnmatched —
+   * then re-syncs the same already-fetched issues so their tasks land in
+   * the same run instead of needing a separate manual mapping pass.
+   *
+   * After that, recomputes every synced issue's `taskCode`
+   * (Epic-1/US-1.1/Task-1.1.1/Bug-1.1.1.1/SubTask-1.1.1.1) via
+   * TaskCodeService — see assignTaskCodesForProject for the numbering
+   * rules. The project name used for that pass is read off the synced
+   * issues themselves (Jira's own project.name), not the key.
+   */
+  async syncSingleProjectFromJira(projectKey: string): Promise<JiraSyncSummary> {
+    const startedAt = new Date();
+
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      const summary = this.emptySummary(JiraSyncStatus.SKIPPED, 'Jira is not configured yet — set it up on the Admin page.');
+      this.logger.warn(summary.errorMessage ?? '');
+      await this.saveLog(startedAt, summary);
+      return summary;
+    }
+
+    const jql = `project in ("${projectKey.replace(/"/g, '')}") order by updated asc`;
+    let issues: JiraIssue[];
+    try {
+      issues = await this.fetchIssues(jql, connection);
+    } catch (err) {
+      const summary = this.emptySummary(
+        JiraSyncStatus.FAILED,
+        err instanceof Error ? err.message : 'Unknown error fetching issues from Jira',
+      );
+      this.logger.error(`Jira single-project sync failed: ${summary.errorMessage}`);
+      await this.saveLog(startedAt, summary);
+      return summary;
+    }
+
+    if (issues.length === 0) {
+      const summary = this.emptySummary(
+        JiraSyncStatus.SKIPPED,
+        `No issues found for project "${projectKey}" — check the key, or that this Jira account can see it.`,
+      );
+      this.logger.warn(summary.errorMessage ?? '');
+      await this.saveLog(startedAt, summary);
+      return summary;
+    }
+
+    let { summary } = await this.fetchAndSyncIssues(issues, connection);
+
+    if (summary.unmatchedAssignees.length > 0) {
+      const employeesCreated = await this.autoCreateEmployeesForUnmatched(summary.unmatchedAssignees, connection);
+      if (employeesCreated.length > 0) {
+        // Re-sync the same already-fetched issues now that these accounts exist, so their tasks are picked up in this same run.
+        const resynced = await this.fetchAndSyncIssues(issues, connection);
+        summary = resynced.summary;
+        summary.employeesCreated = employeesCreated;
+      }
+    }
+
+    const projectName = issues[0].fields.project?.name;
+    if (projectName && (summary.tasksCreated > 0 || summary.tasksUpdated > 0)) {
+      summary.taskCodesAssigned = await this.taskCodeService.assignTaskCodesForProject(projectName);
+    }
+
     this.logger.log(
-      `Jira sync ${summary.status}: ${issues.length} fetched, ${tasksCreated} created, ${tasksUpdated} updated, ${tasksSkipped} skipped, ${summary.unmatchedAssignees.length} unmapped assignee(s)`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped, ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

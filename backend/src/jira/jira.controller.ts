@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
 import { JiraService } from './jira.service';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -37,6 +37,16 @@ export class JiraController {
   @Post('run')
   run() {
     return this.jiraService.syncTasksFromJira();
+  }
+
+  /**
+   * Syncs exactly one Jira project by key, independent of the Admin page's
+   * stored project selection, then recomputes taskCode for every issue in
+   * it (Epic-1/US-1.1/Task-1.1.1/Bug-1.1.1.1/SubTask-1.1.1.1).
+   */
+  @Post('run/:projectKey')
+  runSingleProject(@Param('projectKey') projectKey: string) {
+    return this.jiraService.syncSingleProjectFromJira(projectKey);
   }
 
   /** Ensures a Project row exists for every Jira project in scope — the project analog of run() above, for keeping the Projects list itself in sync. */
