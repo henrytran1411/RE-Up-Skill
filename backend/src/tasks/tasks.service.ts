@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import { TaskRecord } from './entities/task-record.entity';
@@ -7,10 +7,12 @@ import { CompleteTaskRecordDto } from './dto/complete-task-record.dto';
 import { UpdateTaskRecordDto } from './dto/update-task-record.dto';
 import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
+import { ProjectSprintsService } from '../projects/project-sprints.service';
 import { Role } from '../common/enums/role.enum';
 import { ProjectStatus } from '../common/enums/project-status.enum';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { computeTaskScore } from '../evaluations/scoring/scoring.util';
+import { ProjectHealthService, ProjectHealthReport } from './project-health.service';
 
 /** Standard working hours in a month (8h/day x 20 workdays), used to derive an hourly cost rate from monthly salary. */
 const STANDARD_MONTHLY_HOURS = 160;
@@ -73,8 +75,12 @@ export interface ProjectSummary {
   completedTaskCount: number;
   contributorCount: number;
   totalPoints: number;
+  /** Sum of `points` across only completed tasks — points actually delivered so far, vs. totalPoints' full planned scope. */
+  totalActualPoints: number;
   totalEstimateHours: number;
   totalActualHours: number;
+  startDate: string | null;
+  targetEndDate: string | null;
 }
 
 export interface PublicProjectContributor {
@@ -143,6 +149,8 @@ export class TasksService {
     private readonly taskRepository: Repository<TaskRecord>,
     private readonly employeesService: EmployeesService,
     private readonly projectsService: ProjectsService,
+    private readonly projectSprintsService: ProjectSprintsService,
+    private readonly projectHealthService: ProjectHealthService,
   ) {}
 
   /** PM may only touch tasks on a project they're the assigned manager of; other mutating roles are unrestricted. */
@@ -172,6 +180,35 @@ export class TasksService {
     });
   }
 
+  /**
+   * Sprint burndown + Epic critical-path health check for one project — see
+   * ProjectHealthService for the actual computation. Sprint 1 is anchored to
+   * the project's own earliest task, so a projected finish date can be
+   * derived purely from sprint counts without a separate "project start"
+   * field.
+   */
+  async getProjectHealth(projectName: string, requester: AuthenticatedUser): Promise<ProjectHealthReport> {
+    await this.ensurePmManagesProject(requester, projectName);
+    const [project, tasks, sprints] = await Promise.all([
+      this.projectsService.findByName(projectName),
+      this.taskRepository.find({ where: { projectName }, order: { createdAt: 'ASC' } }),
+      this.projectSprintsService.findAllForProject(projectName),
+    ]);
+
+    const sprintStartDate =
+      tasks.length > 0
+        ? tasks.reduce((min, t) => (t.createdAt < min ? t.createdAt : min), tasks[0].createdAt).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+
+    const sprintNumberByProjectSprintId = new Map(sprints.map((s) => [s.id, s.sprintNumber]));
+    return this.projectHealthService.compute(
+      tasks,
+      sprintNumberByProjectSprintId,
+      sprintStartDate,
+      project?.targetEndDate ?? null,
+    );
+  }
+
   async updateTask(id: string, dto: UpdateTaskRecordDto, requester: AuthenticatedUser): Promise<TaskRecord> {
     const task = await this.taskRepository.findOne({ where: { id } });
     if (!task) {
@@ -183,6 +220,50 @@ export class TasksService {
     }
     await this.taskRepository.update(id, dto);
     return this.taskRepository.findOneOrFail({ where: { id } });
+  }
+
+  /**
+   * Sets which other Epics (by their own jiraIssueKey) must finish before
+   * this one can — the input the health check's longest-chain critical-path
+   * calculation runs on. Any existing blockedByIssues entries that don't
+   * point at an Epic in this project (e.g. a bug link) are left untouched.
+   */
+  async setEpicDependencies(
+    id: string,
+    blockedByEpicKeys: string[],
+    requester: AuthenticatedUser,
+  ): Promise<TaskRecord> {
+    const task = await this.taskRepository.findOne({ where: { id } });
+    if (!task) {
+      throw new NotFoundException(`Task ${id} not found`);
+    }
+    await this.ensurePmManagesProject(requester, task.projectName);
+    if (task.issueType !== 'Epic') {
+      throw new BadRequestException('Only Epic issues can have critical-path dependencies');
+    }
+    if (blockedByEpicKeys.includes(task.jiraIssueKey as string)) {
+      throw new BadRequestException('An Epic cannot depend on itself');
+    }
+
+    const projectEpics = await this.taskRepository.find({
+      where: { projectName: task.projectName, issueType: 'Epic' },
+    });
+    const epicByKey = new Map(
+      projectEpics.filter((e) => e.jiraIssueKey !== null).map((e) => [e.jiraIssueKey as string, e]),
+    );
+    const unknownKeys = blockedByEpicKeys.filter((key) => !epicByKey.has(key));
+    if (unknownKeys.length > 0) {
+      throw new BadRequestException(`Not an Epic in this project: ${unknownKeys.join(', ')}`);
+    }
+
+    const preservedRefs = task.blockedByIssues.filter((ref) => !epicByKey.has(ref.key));
+    const epicRefs = blockedByEpicKeys.map((key) => ({
+      key,
+      summary: epicByKey.get(key)!.taskName,
+      issueType: 'Epic',
+    }));
+    task.blockedByIssues = [...preservedRefs, ...epicRefs];
+    return this.taskRepository.save(task);
   }
 
   async removeTask(id: string, requester: AuthenticatedUser): Promise<void> {
@@ -334,6 +415,7 @@ export class TasksService {
       .addSelect('COUNT(t.id) FILTER (WHERE t.completedAt IS NOT NULL)', 'completedTaskCount')
       .addSelect('COUNT(DISTINCT t.employeeId)', 'contributorCount')
       .addSelect('SUM(t.points)', 'totalPoints')
+      .addSelect('SUM(t.points) FILTER (WHERE t.completedAt IS NOT NULL)', 'totalActualPoints')
       .addSelect('SUM(t.estimateHours)', 'totalEstimateHours')
       .addSelect('SUM(t.actualHours)', 'totalActualHours')
       .groupBy('t.projectName')
@@ -364,8 +446,11 @@ export class TasksService {
         completedTaskCount,
         contributorCount: r ? Number(r.contributorCount) : 0,
         totalPoints: r ? Number(r.totalPoints) || 0 : 0,
+        totalActualPoints: r ? Number(r.totalActualPoints) || 0 : 0,
         totalEstimateHours: r ? Number(r.totalEstimateHours) || 0 : 0,
         totalActualHours: r ? Number(r.totalActualHours) || 0 : 0,
+        startDate: project?.startDate ?? null,
+        targetEndDate: project?.targetEndDate ?? null,
       };
     });
 
@@ -409,6 +494,7 @@ export class TasksService {
     }
 
     const totalPoints = tasks.reduce((sum, t) => sum + t.points, 0);
+    const totalActualPoints = tasks.filter((t) => t.completedAt !== null).reduce((sum, t) => sum + t.points, 0);
     const totalEstimateHours = tasks.reduce((sum, t) => sum + t.estimateHours, 0);
     const totalActualHours = tasks.reduce((sum, t) => sum + (t.actualHours ?? 0), 0);
 
@@ -485,8 +571,11 @@ export class TasksService {
       completedTaskCount,
       contributorCount: contributors.length,
       totalPoints,
+      totalActualPoints,
       totalEstimateHours,
       totalActualHours,
+      startDate: project?.startDate ?? null,
+      targetEndDate: project?.targetEndDate ?? null,
     };
 
     if (!canViewRoi) {

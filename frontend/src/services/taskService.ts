@@ -16,6 +16,8 @@ export interface CreateTaskPayload {
   complexity: number;
   points: number;
   actualHours?: number;
+  /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
+  projectSprintId?: string;
 }
 
 export async function createTask(payload: CreateTaskPayload): Promise<TaskRecord> {
@@ -36,4 +38,10 @@ export async function updateTask(id: string, payload: UpdateTaskPayload): Promis
 
 export async function deleteTask(id: string): Promise<void> {
   await apiClient.delete(`/tasks/${id}`);
+}
+
+/** Sets which other Epics (by their own jiraIssueKey) must finish before this one can — drives the critical-path calculation. */
+export async function setEpicDependencies(taskId: string, blockedByEpicKeys: string[]): Promise<TaskRecord> {
+  const { data } = await apiClient.patch<TaskRecord>(`/tasks/${taskId}/epic-dependencies`, { blockedByEpicKeys });
+  return data;
 }

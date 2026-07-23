@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 
 /** All fields optional: HR/Admin can set revenue and/or assign a manager independently, or rename the project. */
 export class UpsertProjectDto {
@@ -21,4 +21,14 @@ export class UpsertProjectDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  /** Kickoff date — anchors the Sprint tab's quick-create-sprints generator. */
+  @IsDateString()
+  @IsOptional()
+  startDate?: string;
+
+  /** Target completion date — compared against the health check's computed critical-path finish. */
+  @IsDateString()
+  @IsOptional()
+  targetEndDate?: string;
 }

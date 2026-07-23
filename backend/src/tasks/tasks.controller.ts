@@ -3,6 +3,7 @@ import { TasksService } from './tasks.service';
 import { CreateTaskRecordDto } from './dto/create-task-record.dto';
 import { CompleteTaskRecordDto } from './dto/complete-task-record.dto';
 import { UpdateTaskRecordDto } from './dto/update-task-record.dto';
+import { SetEpicDependenciesDto } from './dto/set-epic-dependencies.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -102,10 +103,31 @@ export class TasksController {
     return this.tasksService.findTasksForProject(projectName, user);
   }
 
+  /**
+   * Sprint burndown + Epic critical-path health check for one project. A PM
+   * only sees this for a project they manage.
+   */
+  @Get('projects/:projectName/health')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  getProjectHealth(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.getProjectHealth(projectName, user);
+  }
+
   @Patch(':id/complete')
   @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   complete(@Param('id') id: string, @Body() dto: CompleteTaskRecordDto, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.complete(id, dto, user);
+  }
+
+  /** Sets which other Epics must finish before this one can — the Critical Path tab's input to the health check's critical-path calculation. */
+  @Patch(':id/epic-dependencies')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  setEpicDependencies(
+    @Param('id') id: string,
+    @Body() dto: SetEpicDependenciesDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.tasksService.setEpicDependencies(id, dto.blockedByEpicKeys, user);
   }
 
   /** Edit any field on a task — a PM may only do so for a project they manage. */

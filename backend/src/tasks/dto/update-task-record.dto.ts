@@ -47,4 +47,9 @@ export class UpdateTaskRecordDto {
   @IsDateString()
   @IsOptional()
   completedAt?: string;
+
+  /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
+  @IsUUID()
+  @IsOptional()
+  projectSprintId?: string;
 }

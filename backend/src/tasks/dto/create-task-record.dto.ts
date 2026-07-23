@@ -26,4 +26,9 @@ export class CreateTaskRecordDto {
   @IsOptional()
   @IsNumber()
   actualHours?: number;
+
+  /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
+  @IsUUID()
+  @IsOptional()
+  projectSprintId?: string;
 }

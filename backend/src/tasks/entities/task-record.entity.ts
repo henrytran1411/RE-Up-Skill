@@ -76,6 +76,14 @@ export class TaskRecord {
   @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
   blockedByIssues: BlockedByIssueRef[];
 
+  /** The Epic this task belongs to — the Epic's own `jiraIssueKey` (or, for non-Jira example data, any unique key). Null for the Epic issue itself and for tasks with no Epic. */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  epicKey: string | null;
+
+  /** Which project sprint (see ProjectSprint.id) this task was planned/worked in. Used for the project health check's burndown chart — null if not assigned to a sprint. Not an enforced FK — same loose-reference style as Project.managerId. */
+  @Column({ type: 'uuid', nullable: true })
+  projectSprintId: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

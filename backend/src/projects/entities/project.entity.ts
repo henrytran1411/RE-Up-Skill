@@ -27,6 +27,14 @@ export class Project {
   @Column({ type: 'text', nullable: true })
   notes: string | null;
 
+  /** PM/Admin-declared kickoff date — anchors the Sprint tab's quick-create-sprints generator. */
+  @Column({ type: 'date', nullable: true })
+  startDate: string | null;
+
+  /** PM/Admin-declared target completion date — the project health check compares its computed critical-path finish against this. */
+  @Column({ type: 'date', nullable: true })
+  targetEndDate: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

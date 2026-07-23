@@ -44,6 +44,10 @@ export interface TaskRecord {
   issueType: string | null;
   /** Other Jira issues (usually bugs) that block this one — empty when none or not Jira-synced. */
   blockedByIssues: BlockedByIssueRef[];
+  /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
+  projectSprintId: string | null;
+  /** The Epic this task belongs to (that Epic's own jiraIssueKey) — null for the Epic issue itself and for tasks with no Epic. */
+  epicKey: string | null;
 }
 
 /** What `GET /tasks/projects/:projectName/tasks` returns — a task with its assignee joined in. */

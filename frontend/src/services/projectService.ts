@@ -18,6 +18,8 @@ export interface CreateProjectPayload {
   revenue?: number;
   managerId?: string;
   notes?: string;
+  startDate?: string;
+  targetEndDate?: string;
 }
 
 export async function createProject(payload: CreateProjectPayload): Promise<void> {
@@ -30,6 +32,8 @@ export interface UpsertProjectPayload {
   revenue?: number;
   managerId?: string;
   notes?: string;
+  startDate?: string;
+  targetEndDate?: string;
 }
 
 export async function upsertProject(projectName: string, payload: UpsertProjectPayload): Promise<void> {

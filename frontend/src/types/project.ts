@@ -9,8 +9,12 @@ export interface ProjectSummary {
   completedTaskCount: number;
   contributorCount: number;
   totalPoints: number;
+  /** Sum of `points` across only completed tasks — points actually delivered so far, vs. totalPoints' full planned scope. */
+  totalActualPoints: number;
   totalEstimateHours: number;
   totalActualHours: number;
+  startDate: string | null;
+  targetEndDate: string | null;
 }
 
 export interface PublicProjectContributor {

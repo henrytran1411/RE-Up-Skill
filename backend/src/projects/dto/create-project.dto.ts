@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 
 export class CreateProjectDto {
   @IsString()
@@ -18,4 +18,14 @@ export class CreateProjectDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  /** Kickoff date — anchors the Sprint tab's quick-create-sprints generator. */
+  @IsDateString()
+  @IsOptional()
+  startDate?: string;
+
+  /** Target completion date — compared against the health check's computed critical-path finish. */
+  @IsDateString()
+  @IsOptional()
+  targetEndDate?: string;
 }

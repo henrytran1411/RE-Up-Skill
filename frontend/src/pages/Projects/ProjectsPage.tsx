@@ -18,6 +18,8 @@ import {
   DatePicker,
   Popconfirm,
   message,
+  Tabs,
+  Tooltip,
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -29,6 +31,7 @@ import {
   CloseOutlined,
   PlusOutlined,
   DeleteOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   fetchAllProjects,
@@ -37,11 +40,26 @@ import {
   createProject,
   deleteProject,
 } from '../../services/projectService';
-import { fetchTasksForProject, createTask, updateTask, deleteTask } from '../../services/taskService';
+import {
+  fetchTasksForProject,
+  createTask,
+  updateTask,
+  deleteTask,
+  setEpicDependencies,
+} from '../../services/taskService';
 import { fetchAllEmployees, setEmployeeSalary } from '../../services/employeeService';
+import { fetchProjectHealth } from '../../services/projectHealthService';
+import {
+  fetchSprintsForProject,
+  createSprint,
+  updateSprint,
+  deleteSprint,
+  generateSprints,
+} from '../../services/projectSprintService';
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
 import { BlockedByTags } from '../../components/BlockedByTags';
+import { ProjectHealthPanel } from '../../components/ProjectHealthPanel';
 import {
   ProjectSummary,
   ProjectOverview,
@@ -50,6 +68,8 @@ import {
   PublicProjectContributor,
   hasRoiData,
 } from '../../types/project';
+import { ProjectHealthReport, EpicHealth } from '../../types/projectHealth';
+import { ProjectSprint } from '../../types/projectSprint';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
 import { useAuth } from '../../context/AuthContext';
@@ -91,9 +111,21 @@ export function ProjectsPage() {
   const [detail, setDetail] = useState<ProjectOverview | PublicProjectOverview | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [nameInput, setNameInput] = useState('');
-  const [revenueInput, setRevenueInput] = useState<number | null>(null);
   const [managerInput, setManagerInput] = useState<string | undefined>(undefined);
+  const [startDateInput, setStartDateInput] = useState<dayjs.Dayjs | null>(null);
+  const [targetEndDateInput, setTargetEndDateInput] = useState<dayjs.Dayjs | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [healthReport, setHealthReport] = useState<ProjectHealthReport | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [sprints, setSprints] = useState<ProjectSprint[]>([]);
+  const [sprintsLoading, setSprintsLoading] = useState(false);
+  const [sprintModalOpen, setSprintModalOpen] = useState(false);
+  const [editingSprint, setEditingSprint] = useState<ProjectSprint | null>(null);
+  const [savingSprint, setSavingSprint] = useState(false);
+  const [generatingSprints, setGeneratingSprints] = useState(false);
+  const [sprintForm] = Form.useForm();
+  const [savingTaskSprintId, setSavingTaskSprintId] = useState<string | null>(null);
+  const [savingEpicDependencyKey, setSavingEpicDependencyKey] = useState<string | null>(null);
   const [editingSalaryId, setEditingSalaryId] = useState<string | null>(null);
   const [salaryDraft, setSalaryDraft] = useState<number | null>(null);
   const [savingSalary, setSavingSalary] = useState(false);
@@ -129,16 +161,40 @@ export function ProjectsPage() {
     }
   };
 
+  const loadProjectHealth = async (projectName: string) => {
+    setHealthLoading(true);
+    try {
+      setHealthReport(await fetchProjectHealth(projectName));
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to load project health'));
+    } finally {
+      setHealthLoading(false);
+    }
+  };
+
+  const loadSprints = async (projectName: string) => {
+    if (!canManageTasks) return;
+    setSprintsLoading(true);
+    try {
+      setSprints(await fetchSprintsForProject(projectName));
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to load sprints'));
+    } finally {
+      setSprintsLoading(false);
+    }
+  };
+
   const openDetail = async (projectName: string) => {
     setDetailLoading(true);
     try {
       const overview = await fetchProjectOverview(projectName);
       setDetail(overview);
       setNameInput(overview.projectName);
-      setRevenueInput(hasRoiData(overview) ? overview.revenue : null);
       setManagerInput(overview.managerId ?? undefined);
+      setStartDateInput(overview.startDate ? dayjs(overview.startDate) : null);
+      setTargetEndDateInput(overview.targetEndDate ? dayjs(overview.targetEndDate) : null);
       setEditingSalaryId(null);
-      await loadProjectTasks(projectName);
+      await Promise.all([loadProjectTasks(projectName), loadProjectHealth(projectName), loadSprints(projectName)]);
     } finally {
       setDetailLoading(false);
     }
@@ -148,7 +204,9 @@ export function ProjectsPage() {
     const overview = await fetchProjectOverview(projectName);
     setDetail(overview);
     setNameInput(overview.projectName);
-    await loadProjectTasks(projectName);
+    setStartDateInput(overview.startDate ? dayjs(overview.startDate) : null);
+    setTargetEndDateInput(overview.targetEndDate ? dayjs(overview.targetEndDate) : null);
+    await Promise.all([loadProjectTasks(projectName), loadProjectHealth(projectName), loadSprints(projectName)]);
   };
 
   const handleSaveSettings = async () => {
@@ -157,8 +215,9 @@ export function ProjectsPage() {
     try {
       await upsertProject(detail.projectName, {
         name: nameInput === detail.projectName ? undefined : nameInput,
-        revenue: revenueInput ?? undefined,
         managerId: managerInput,
+        startDate: startDateInput ? startDateInput.format('YYYY-MM-DD') : undefined,
+        targetEndDate: targetEndDateInput ? targetEndDateInput.format('YYYY-MM-DD') : undefined,
       });
       message.success('Project settings updated');
       await refreshDetail(nameInput || detail.projectName);
@@ -179,7 +238,11 @@ export function ProjectsPage() {
     const values = await createForm.validateFields();
     setCreating(true);
     try {
-      await createProject(values);
+      await createProject({
+        ...values,
+        startDate: values.startDate ? values.startDate.format('YYYY-MM-DD') : undefined,
+        targetEndDate: values.targetEndDate ? values.targetEndDate.format('YYYY-MM-DD') : undefined,
+      });
       message.success('Project created');
       setCreateModalOpen(false);
       loadProjects();
@@ -257,6 +320,108 @@ export function ProjectsPage() {
       loadProjects();
     } catch (err) {
       message.error(errorMessage(err, 'Failed to delete task'));
+    }
+  };
+
+  const openSprintCreateModal = () => {
+    setEditingSprint(null);
+    sprintForm.resetFields();
+    setSprintModalOpen(true);
+  };
+
+  const openSprintEditModal = (sprint: ProjectSprint) => {
+    setEditingSprint(sprint);
+    sprintForm.setFieldsValue({
+      sprintNumber: sprint.sprintNumber,
+      name: sprint.name ?? undefined,
+      startDate: dayjs(sprint.startDate),
+      endDate: dayjs(sprint.endDate),
+    });
+    setSprintModalOpen(true);
+  };
+
+  const handleSprintSubmit = async () => {
+    if (!detail) return;
+    const values = await sprintForm.validateFields();
+    const payload = {
+      sprintNumber: values.sprintNumber,
+      name: values.name || undefined,
+      startDate: values.startDate.format('YYYY-MM-DD'),
+      endDate: values.endDate.format('YYYY-MM-DD'),
+    };
+    setSavingSprint(true);
+    try {
+      if (editingSprint) {
+        await updateSprint(detail.projectName, editingSprint.id, payload);
+        message.success('Sprint updated');
+      } else {
+        await createSprint(detail.projectName, payload);
+        message.success('Sprint created');
+      }
+      setSprintModalOpen(false);
+      await loadSprints(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to save sprint'));
+    } finally {
+      setSavingSprint(false);
+    }
+  };
+
+  const handleSprintDelete = async (sprint: ProjectSprint) => {
+    if (!detail) return;
+    try {
+      await deleteSprint(detail.projectName, sprint.id);
+      message.success('Sprint deleted');
+      await loadSprints(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to delete sprint'));
+    }
+  };
+
+  const handleGenerateSprints = async () => {
+    if (!detail) return;
+    setGeneratingSprints(true);
+    try {
+      await generateSprints(detail.projectName);
+      message.success('Sprints generated');
+      await loadSprints(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to generate sprints'));
+    } finally {
+      setGeneratingSprints(false);
+    }
+  };
+
+  const handleTaskSprintChange = async (task: TaskWithEmployee, projectSprintId: string | undefined) => {
+    if (!detail) return;
+    setSavingTaskSprintId(task.id);
+    try {
+      await updateTask(task.id, { projectSprintId });
+      message.success('Task sprint updated');
+      await refreshDetail(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to update task sprint'));
+    } finally {
+      setSavingTaskSprintId(null);
+    }
+  };
+
+  const handleEpicDependenciesChange = async (epic: EpicHealth, blockedByEpicKeys: string[]) => {
+    if (!detail) return;
+    const task = projectTasks.find((t) => t.issueType === 'Epic' && t.jiraIssueKey === epic.key);
+    if (!task) {
+      message.error(`Could not find the task record behind Epic ${epic.key}`);
+      return;
+    }
+    setSavingEpicDependencyKey(epic.key);
+    try {
+      await setEpicDependencies(task.id, blockedByEpicKeys);
+      message.success('Epic dependencies updated');
+      await loadProjectHealth(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to update Epic dependencies'));
+    } finally {
+      setSavingEpicDependencyKey(null);
     }
   };
 
@@ -375,6 +540,12 @@ export function ProjectsPage() {
           <Form.Item name="revenue" label="Revenue">
             <InputNumber min={0} style={{ width: '100%' }} placeholder="e.g. 50000" />
           </Form.Item>
+          <Form.Item name="startDate" label="Start date">
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="targetEndDate" label="Target end date">
+            <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
           <Form.Item name="notes" label="Notes">
             <Input.TextArea rows={2} />
           </Form.Item>
@@ -400,269 +571,469 @@ export function ProjectsPage() {
         {detailLoading || !detail ? (
           'Loading…'
         ) : (
-          <>
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col span={6}>
-                <Statistic title="Tasks" value={`${detail.completedTaskCount} / ${detail.taskCount}`} />
-              </Col>
-              <Col span={6}>
-                <Statistic title="Contributors" value={detail.contributorCount} />
-              </Col>
-              <Col span={6}>
-                <Statistic title="Total Points" value={detail.totalPoints} />
-              </Col>
-              <Col span={6}>
-                <Statistic
-                  title="Total Estimate / Actual Hours"
-                  value={detail.totalEstimateHours}
-                  suffix={`/ ${detail.totalActualHours}`}
-                />
-              </Col>
-            </Row>
+          <Tabs
+            key={detail.projectName}
+            items={[
+              {
+                key: 'overall',
+                label: 'Overall',
+                children: (
+                  <>
+                    <Row gutter={16} style={{ marginBottom: 16 }}>
+                      <Col span={6}>
+                        <Statistic title="Tasks" value={`${detail.completedTaskCount} / ${detail.taskCount}`} />
+                      </Col>
+                      <Col span={6}>
+                        <Statistic title="Contributors" value={detail.contributorCount} />
+                      </Col>
+                      <Col span={6}>
+                        <Statistic
+                          title="Total Estimate / Actual Points"
+                          value={detail.totalPoints}
+                          suffix={`/ ${detail.totalActualPoints}`}
+                        />
+                      </Col>
+                      <Col span={6}>
+                        <Statistic
+                          title="Total Estimate / Actual Hours"
+                          value={detail.totalEstimateHours}
+                          suffix={`/ ${detail.totalActualHours}`}
+                        />
+                      </Col>
+                    </Row>
 
-            <ProjectEffortChart contributors={detail.contributors} />
+                    <ProjectEffortChart contributors={detail.contributors} />
 
-            <Table
-              rowKey="employeeId"
-              size="small"
-              style={{ marginTop: 16 }}
-              pagination={false}
-              dataSource={detail.contributors}
-              columns={[
-                { title: 'Employee', dataIndex: 'employeeName' },
-                { title: 'Tasks', dataIndex: 'taskCount' },
-                {
-                  title: 'Points',
-                  render: (_, record: PublicProjectContributor) => `${record.points} (${record.pointsEffortPercent}%)`,
-                },
-                {
-                  title: 'Estimate hrs',
-                  render: (_, record: PublicProjectContributor) =>
-                    `${record.estimateHours} (${record.estimateEffortPercent}%)`,
-                },
-                {
-                  title: 'Actual hrs',
-                  render: (_, record: PublicProjectContributor) =>
-                    `${record.actualHours} (${record.actualEffortPercent}%)`,
-                },
-              ]}
-            />
+                    <Table
+                      rowKey="employeeId"
+                      size="small"
+                      style={{ marginTop: 16 }}
+                      pagination={false}
+                      dataSource={detail.contributors}
+                      columns={[
+                        { title: 'Employee', dataIndex: 'employeeName' },
+                        { title: 'Tasks', dataIndex: 'taskCount' },
+                        {
+                          title: 'Points',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.points} (${record.pointsEffortPercent}%)`,
+                        },
+                        {
+                          title: 'Estimate hrs',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.estimateHours} (${record.estimateEffortPercent}%)`,
+                        },
+                        {
+                          title: 'Actual hrs',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.actualHours} (${record.actualEffortPercent}%)`,
+                        },
+                      ]}
+                    />
 
-            {canManageTasks && (
-              <>
-                <Typography.Title level={5} style={{ marginTop: 24 }}>
-                  Task Management
-                </Typography.Title>
-                <Button
-                  size="small"
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  style={{ marginBottom: 8 }}
-                  onClick={openCreateTaskModal}
-                >
-                  Add Task
-                </Button>
-                <Table
-                  rowKey="id"
-                  size="small"
-                  loading={tasksLoading}
-                  pagination={false}
-                  dataSource={projectTasks}
-                  columns={[
-                    { title: 'Task', dataIndex: 'taskName' },
-                    {
-                      title: 'Type',
-                      render: (_, record: TaskWithEmployee) => <IssueTypeTag issueType={record.issueType} />,
-                    },
-                    { title: 'Employee', render: (_, record: TaskWithEmployee) => record.employee.fullName },
-                    { title: 'Estimate hrs', dataIndex: 'estimateHours' },
-                    {
-                      title: 'Actual hrs',
-                      render: (_, record: TaskWithEmployee) => record.actualHours ?? '—',
-                    },
-                    { title: 'Points', dataIndex: 'points' },
-                    { title: 'Complexity', dataIndex: 'complexity' },
-                    { title: 'Bugs', dataIndex: 'bugCount' },
-                    {
-                      title: 'Blocked By',
-                      render: (_, record: TaskWithEmployee) => <BlockedByTags blockedByIssues={record.blockedByIssues} />,
-                    },
-                    {
-                      title: 'PM Rating',
-                      render: (_, record: TaskWithEmployee) => record.pmRating ?? '—',
-                    },
-                    {
-                      title: 'Completed',
-                      render: (_, record: TaskWithEmployee) => record.completedAt ?? '—',
-                    },
-                    {
-                      title: 'Actions',
-                      render: (_, record: TaskWithEmployee) => (
-                        <Space>
-                          <Button size="small" icon={<EditOutlined />} onClick={() => openEditTaskModal(record)} />
-                          <Popconfirm
-                            title="Delete this task?"
-                            description="This cannot be undone."
-                            onConfirm={() => handleDeleteTask(record)}
+                    {canManage && (
+                      <>
+                        <Typography.Title level={5} style={{ marginTop: 24 }}>
+                          Project Settings
+                        </Typography.Title>
+                        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                          <Space wrap>
+                            <span>Name:</span>
+                            <Input
+                              value={nameInput}
+                              onChange={(e) => setNameInput(e.target.value)}
+                              style={{ width: 200 }}
+                            />
+                          </Space>
+                          <Space wrap>
+                            <span>Manager:</span>
+                            <Select
+                              allowClear
+                              placeholder="Unassigned"
+                              style={{ width: 220 }}
+                              value={managerInput}
+                              onChange={(value) => setManagerInput(value)}
+                              options={employees.map((e) => ({ value: e.id, label: e.fullName }))}
+                              showSearch
+                              optionFilterProp="label"
+                            />
+                          </Space>
+                          <Space wrap>
+                            <span>Start date:</span>
+                            <DatePicker
+                              value={startDateInput}
+                              onChange={(value) => setStartDateInput(value)}
+                              style={{ width: 160 }}
+                            />
+                          </Space>
+                          <Space wrap>
+                            <span>Target end date:</span>
+                            <DatePicker
+                              value={targetEndDateInput}
+                              onChange={(value) => setTargetEndDateInput(value)}
+                              style={{ width: 160 }}
+                            />
+                          </Space>
+                          <Button
+                            type="primary"
+                            icon={<SaveOutlined />}
+                            loading={savingSettings}
+                            onClick={handleSaveSettings}
                           >
-                            <Button size="small" danger icon={<DeleteOutlined />} />
-                          </Popconfirm>
+                            Save
+                          </Button>
                         </Space>
+                      </>
+                    )}
+
+                    <Typography.Title level={5} style={{ marginTop: 24 }}>
+                      Project Health Check
+                    </Typography.Title>
+                    {healthLoading || !healthReport ? 'Loading…' : <ProjectHealthPanel report={healthReport} />}
+                  </>
+                ),
+              },
+              ...(canManageTasks
+                ? [
+                    {
+                      key: 'tasks',
+                      label: 'Task Management',
+                      children: (
+                        <>
+                          <Button
+                            size="small"
+                            type="primary"
+                            icon={<PlusOutlined />}
+                            style={{ marginBottom: 8 }}
+                            onClick={openCreateTaskModal}
+                          >
+                            Add Task
+                          </Button>
+                          <Table
+                            rowKey="id"
+                            size="small"
+                            loading={tasksLoading}
+                            pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['10', '20', '50'] }}
+                            dataSource={projectTasks}
+                            columns={[
+                              { title: 'Task', dataIndex: 'taskName' },
+                              {
+                                title: 'Type',
+                                render: (_, record: TaskWithEmployee) => <IssueTypeTag issueType={record.issueType} />,
+                              },
+                              { title: 'Employee', render: (_, record: TaskWithEmployee) => record.employee.fullName },
+                              {
+                                title: 'Sprint',
+                                render: (_, record: TaskWithEmployee) => (
+                                  <Select
+                                    size="small"
+                                    style={{ width: 110 }}
+                                    allowClear
+                                    placeholder="Unassigned"
+                                    value={record.projectSprintId ?? undefined}
+                                    loading={savingTaskSprintId === record.id}
+                                    disabled={savingTaskSprintId === record.id}
+                                    onChange={(value) => handleTaskSprintChange(record, value)}
+                                    options={sprints.map((s) => ({
+                                      value: s.id,
+                                      label: `Sprint ${s.sprintNumber}`,
+                                    }))}
+                                  />
+                                ),
+                              },
+                              { title: 'Estimate hrs', dataIndex: 'estimateHours' },
+                              {
+                                title: 'Actual hrs',
+                                render: (_, record: TaskWithEmployee) => record.actualHours ?? '—',
+                              },
+                              { title: 'Points', dataIndex: 'points' },
+                              { title: 'Complexity', dataIndex: 'complexity' },
+                              { title: 'Bugs', dataIndex: 'bugCount' },
+                              {
+                                title: 'Blocked By',
+                                render: (_, record: TaskWithEmployee) => (
+                                  <BlockedByTags blockedByIssues={record.blockedByIssues} />
+                                ),
+                              },
+                              {
+                                title: 'PM Rating',
+                                render: (_, record: TaskWithEmployee) => record.pmRating ?? '—',
+                              },
+                              {
+                                title: 'Completed',
+                                render: (_, record: TaskWithEmployee) => record.completedAt ?? '—',
+                              },
+                              {
+                                title: 'Actions',
+                                render: (_, record: TaskWithEmployee) => (
+                                  <Space>
+                                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditTaskModal(record)} />
+                                    <Popconfirm
+                                      title="Delete this task?"
+                                      description="This cannot be undone."
+                                      onConfirm={() => handleDeleteTask(record)}
+                                    >
+                                      <Button size="small" danger icon={<DeleteOutlined />} />
+                                    </Popconfirm>
+                                  </Space>
+                                ),
+                              },
+                            ]}
+                          />
+                        </>
                       ),
                     },
-                  ]}
-                />
-              </>
-            )}
-
-            {canManage && (
-              <>
-                <Typography.Title level={5} style={{ marginTop: 24 }}>
-                  Project settings
-                </Typography.Title>
-                <Space wrap style={{ marginBottom: 16 }}>
-                  <span>Name:</span>
-                  <Input
-                    value={nameInput}
-                    onChange={(e) => setNameInput(e.target.value)}
-                    style={{ width: 200 }}
-                  />
-                  <span>Manager:</span>
-                  <Select
-                    allowClear
-                    placeholder="Unassigned"
-                    style={{ width: 220 }}
-                    value={managerInput}
-                    onChange={(value) => setManagerInput(value)}
-                    options={employees.map((e) => ({ value: e.id, label: e.fullName }))}
-                    showSearch
-                    optionFilterProp="label"
-                  />
-                  <span>Project revenue:</span>
-                  <InputNumber
-                    min={0}
-                    value={revenueInput ?? undefined}
-                    onChange={(value) => setRevenueInput(value)}
-                    style={{ width: 160 }}
-                  />
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    loading={savingSettings}
-                    onClick={handleSaveSettings}
-                  >
-                    Save
-                  </Button>
-                </Space>
-              </>
-            )}
-
-            {roiOverview && (
-              <>
-                <Typography.Title level={5} style={{ marginTop: 24 }}>
-                  Return on Investment
-                </Typography.Title>
-
-                {roiOverview.contributorsMissingSalaryCount > 0 && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginBottom: 16 }}
-                    message={`${roiOverview.contributorsMissingSalaryCount} of ${roiOverview.contributorCount} contributors have no salary on file — their cost is excluded, so Total Cost / Net Profit below understate reality.`}
-                  />
-                )}
-
-                <Row gutter={16} style={{ marginBottom: 16 }}>
-                  <Col span={6}>
-                    <Statistic title="Revenue" value={formatMoney(roiOverview.revenue)} />
-                  </Col>
-                  <Col span={6}>
-                    <Statistic title="Total Cost" value={formatMoney(roiOverview.totalCost)} />
-                  </Col>
-                  <Col span={6}>
-                    <Statistic
-                      title="Net Profit"
-                      value={formatMoney(roiOverview.netProfit)}
-                      valueStyle={{ color: roiOverview.netProfit >= 0 ? '#3f8600' : '#cf1322' }}
-                    />
-                  </Col>
-                  <Col span={6}>
-                    <Statistic
-                      title="ROI"
-                      value={roiOverview.roiPercent === null ? 'N/A' : `${roiOverview.roiPercent}%`}
-                      valueStyle={{ color: (roiOverview.roiPercent ?? 0) >= 0 ? '#3f8600' : '#cf1322' }}
-                    />
-                  </Col>
-                </Row>
-
-                <Table
-                  rowKey="employeeId"
-                  size="small"
-                  pagination={false}
-                  dataSource={roiOverview.contributors}
-                  columns={[
-                    { title: 'Employee', dataIndex: 'employeeName' },
+                  ]
+                : []),
+              ...(canManageTasks
+                ? [
                     {
-                      title: 'Monthly Salary',
-                      render: (_, record: ProjectContributor) => {
-                        if (editingSalaryId === record.employeeId) {
-                          return (
-                            <Space>
-                              <InputNumber
-                                min={0}
-                                autoFocus
-                                size="small"
-                                style={{ width: 110 }}
-                                value={salaryDraft ?? undefined}
-                                onChange={(value) => setSalaryDraft(value)}
-                              />
+                      key: 'sprint',
+                      label: 'Sprint',
+                      children: (
+                        <>
+                          <Typography.Paragraph type="secondary">
+                            Defined manually — Jira's own sprint field varies per instance and is often unset on
+                            backlog items, so sprints are planned here and assigned to tasks in the Task Management
+                            tab instead of synced.
+                          </Typography.Paragraph>
+                          <Space style={{ marginBottom: 8 }}>
+                            <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openSprintCreateModal}>
+                              Add Sprint
+                            </Button>
+                            <Tooltip
+                              title={
+                                detail.startDate && detail.targetEndDate
+                                  ? 'Fills in sequential 2-week (10 working day) sprints from the start date through the target end date — existing sprint numbers are left untouched.'
+                                  : 'Set both a start date and a target end date in the Project Settings section of the Overall tab first.'
+                              }
+                            >
                               <Button
                                 size="small"
-                                type="text"
-                                icon={<CheckOutlined />}
-                                loading={savingSalary}
-                                onClick={() => saveSalary(record.employeeId)}
-                              />
-                              <Button size="small" type="text" icon={<CloseOutlined />} onClick={cancelEditSalary} />
-                            </Space>
-                          );
-                        }
-                        return (
-                          <Space>
-                            {formatMoney(record.monthlySalary)}
-                            {canManage && (
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<EditOutlined />}
-                                onClick={() => startEditSalary(record)}
-                              />
-                            )}
+                                icon={<ThunderboltOutlined />}
+                                loading={generatingSprints}
+                                disabled={!detail.startDate || !detail.targetEndDate}
+                                onClick={handleGenerateSprints}
+                              >
+                                Quick Create Sprints
+                              </Button>
+                            </Tooltip>
                           </Space>
-                        );
-                      },
+                          <Table
+                            rowKey="id"
+                            size="small"
+                            loading={sprintsLoading}
+                            pagination={false}
+                            dataSource={sprints}
+                            columns={[
+                              { title: 'Sprint #', dataIndex: 'sprintNumber' },
+                              { title: 'Name', render: (_, s: ProjectSprint) => s.name ?? '—' },
+                              { title: 'Start', dataIndex: 'startDate' },
+                              { title: 'End', dataIndex: 'endDate' },
+                              {
+                                title: 'Actions',
+                                render: (_, s: ProjectSprint) => (
+                                  <Space>
+                                    <Button size="small" icon={<EditOutlined />} onClick={() => openSprintEditModal(s)} />
+                                    <Popconfirm
+                                      title="Delete this sprint?"
+                                      description="Blocked if any task is still assigned to it."
+                                      onConfirm={() => handleSprintDelete(s)}
+                                    >
+                                      <Button size="small" danger icon={<DeleteOutlined />} />
+                                    </Popconfirm>
+                                  </Space>
+                                ),
+                              },
+                            ]}
+                          />
+                        </>
+                      ),
                     },
-                    { title: 'Hours Spent', dataIndex: 'hoursSpent' },
-                    { title: 'Cost', render: (_, record: ProjectContributor) => formatMoney(record.cost) },
+                  ]
+                : []),
+              ...(canManageTasks
+                ? [
                     {
-                      title: 'Revenue Share',
-                      render: (_, record: ProjectContributor) => formatMoney(record.revenueShare),
+                      key: 'criticalPath',
+                      label: 'Critical Path',
+                      children: (
+                        <>
+                          <Typography.Paragraph type="secondary">
+                            Mark which Epics each Epic depends on — the critical path is the longest resulting
+                            dependency chain, recomputed automatically every time you change these.
+                          </Typography.Paragraph>
+                          {healthLoading || !healthReport ? (
+                            'Loading…'
+                          ) : healthReport.epics.length === 0 ? (
+                            <Alert type="info" showIcon message="No Epic issues found for this project yet." />
+                          ) : (
+                            <>
+                              <Table
+                                rowKey="key"
+                                size="small"
+                                pagination={false}
+                                dataSource={healthReport.epics}
+                                columns={[
+                                  {
+                                    title: 'Epic',
+                                    render: (_, epic: EpicHealth) => (
+                                      <Space>
+                                        {epic.isOnCriticalPath && <Tag color="red">Critical Path</Tag>}
+                                        {epic.name} ({epic.key})
+                                      </Space>
+                                    ),
+                                  },
+                                  { title: 'Total Pts', dataIndex: 'totalPoints' },
+                                  { title: 'Remaining Pts', dataIndex: 'remainingPoints' },
+                                  { title: 'Sprints Needed', dataIndex: 'estimatedSprintsNeeded' },
+                                  {
+                                    title: 'Depends on (blocked by)',
+                                    render: (_, epic: EpicHealth) => (
+                                      <Select
+                                        mode="multiple"
+                                        size="small"
+                                        style={{ minWidth: 240 }}
+                                        placeholder="None"
+                                        value={epic.blockedByEpicKeys}
+                                        loading={savingEpicDependencyKey === epic.key}
+                                        disabled={savingEpicDependencyKey === epic.key}
+                                        onChange={(keys) => handleEpicDependenciesChange(epic, keys)}
+                                        options={healthReport.epics
+                                          .filter((e) => e.key !== epic.key)
+                                          .map((e) => ({ value: e.key, label: `${e.name} (${e.key})` }))}
+                                      />
+                                    ),
+                                  },
+                                ]}
+                              />
+                              {healthReport.criticalPath.length > 0 && (
+                                <Typography.Paragraph style={{ marginTop: 16 }}>
+                                  <strong>Critical path:</strong>{' '}
+                                  {healthReport.criticalPath
+                                    .map((key) => healthReport.epics.find((e) => e.key === key))
+                                    .filter((e): e is EpicHealth => e !== undefined)
+                                    .map((e) => `${e.name} (${e.key})`)
+                                    .join(' → ')}
+                                </Typography.Paragraph>
+                              )}
+                            </>
+                          )}
+                        </>
+                      ),
                     },
+                  ]
+                : []),
+              ...(roiOverview
+                ? [
                     {
-                      title: 'Net Contribution',
-                      render: (_, record: ProjectContributor) => formatMoney(record.netContribution),
+                      key: 'roi',
+                      label: 'Return on Investment',
+                      children: (
+                        <>
+                          {roiOverview.contributorsMissingSalaryCount > 0 && (
+                            <Alert
+                              type="warning"
+                              showIcon
+                              style={{ marginBottom: 16 }}
+                              message={`${roiOverview.contributorsMissingSalaryCount} of ${roiOverview.contributorCount} contributors have no salary on file — their cost is excluded, so Total Cost / Net Profit below understate reality.`}
+                            />
+                          )}
+
+                          <Row gutter={16} style={{ marginBottom: 16 }}>
+                            <Col span={6}>
+                              <Statistic title="Revenue" value={formatMoney(roiOverview.revenue)} />
+                            </Col>
+                            <Col span={6}>
+                              <Statistic title="Total Cost" value={formatMoney(roiOverview.totalCost)} />
+                            </Col>
+                            <Col span={6}>
+                              <Statistic
+                                title="Net Profit"
+                                value={formatMoney(roiOverview.netProfit)}
+                                valueStyle={{ color: roiOverview.netProfit >= 0 ? '#3f8600' : '#cf1322' }}
+                              />
+                            </Col>
+                            <Col span={6}>
+                              <Statistic
+                                title="ROI"
+                                value={roiOverview.roiPercent === null ? 'N/A' : `${roiOverview.roiPercent}%`}
+                                valueStyle={{ color: (roiOverview.roiPercent ?? 0) >= 0 ? '#3f8600' : '#cf1322' }}
+                              />
+                            </Col>
+                          </Row>
+
+                          <Table
+                            rowKey="employeeId"
+                            size="small"
+                            pagination={false}
+                            dataSource={roiOverview.contributors}
+                            columns={[
+                              { title: 'Employee', dataIndex: 'employeeName' },
+                              {
+                                title: 'Monthly Salary',
+                                render: (_, record: ProjectContributor) => {
+                                  if (editingSalaryId === record.employeeId) {
+                                    return (
+                                      <Space>
+                                        <InputNumber
+                                          min={0}
+                                          autoFocus
+                                          size="small"
+                                          style={{ width: 110 }}
+                                          value={salaryDraft ?? undefined}
+                                          onChange={(value) => setSalaryDraft(value)}
+                                        />
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<CheckOutlined />}
+                                          loading={savingSalary}
+                                          onClick={() => saveSalary(record.employeeId)}
+                                        />
+                                        <Button size="small" type="text" icon={<CloseOutlined />} onClick={cancelEditSalary} />
+                                      </Space>
+                                    );
+                                  }
+                                  return (
+                                    <Space>
+                                      {formatMoney(record.monthlySalary)}
+                                      {canManage && (
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<EditOutlined />}
+                                          onClick={() => startEditSalary(record)}
+                                        />
+                                      )}
+                                    </Space>
+                                  );
+                                },
+                              },
+                              { title: 'Hours Spent', dataIndex: 'hoursSpent' },
+                              { title: 'Cost', render: (_, record: ProjectContributor) => formatMoney(record.cost) },
+                              {
+                                title: 'Revenue Share',
+                                render: (_, record: ProjectContributor) => formatMoney(record.revenueShare),
+                              },
+                              {
+                                title: 'Net Contribution',
+                                render: (_, record: ProjectContributor) => formatMoney(record.netContribution),
+                              },
+                              {
+                                title: 'ROI',
+                                render: (_, record: ProjectContributor) =>
+                                  record.roiPercent === null ? 'N/A' : `${record.roiPercent}%`,
+                              },
+                            ]}
+                          />
+                        </>
+                      ),
                     },
-                    {
-                      title: 'ROI',
-                      render: (_, record: ProjectContributor) =>
-                        record.roiPercent === null ? 'N/A' : `${record.roiPercent}%`,
-                    },
-                  ]}
-                />
-              </>
-            )}
-          </>
+                  ]
+                : []),
+            ]}
+          />
         )}
       </Modal>
 
@@ -709,6 +1080,31 @@ export function ProjectsPage() {
           <Form.Item name="completedAt" label="Completed date">
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={editingSprint ? 'Edit sprint' : 'Add sprint'}
+        open={sprintModalOpen}
+        onOk={handleSprintSubmit}
+        onCancel={() => setSprintModalOpen(false)}
+        confirmLoading={savingSprint}
+      >
+        <Form form={sprintForm} layout="vertical">
+          <Form.Item name="sprintNumber" label="Sprint #" rules={[{ required: true }]}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="name" label="Name (optional)">
+            <Input placeholder="e.g. Sprint 1 — Foundations" />
+          </Form.Item>
+          <Space style={{ width: '100%' }}>
+            <Form.Item name="startDate" label="Start date" rules={[{ required: true }]}>
+              <DatePicker />
+            </Form.Item>
+            <Form.Item name="endDate" label="End date" rules={[{ required: true }]}>
+              <DatePicker />
+            </Form.Item>
+          </Space>
         </Form>
       </Modal>
     </Card>
