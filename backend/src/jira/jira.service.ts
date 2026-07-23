@@ -29,6 +29,8 @@ interface JiraIssue {
     timetracking?: { originalEstimateSeconds?: number; timeSpentSeconds?: number };
     issuetype?: { name?: string };
     issuelinks?: JiraIssueLink[];
+    /** The issue this one is nested under in Jira's own issue hierarchy — a Story's parent is its Epic, a Task/Bug/Sub-task's parent is its Story (or directly its Epic, if the team skips the Story tier). */
+    parent?: { key: string };
     [customField: string]: unknown;
   };
 }
@@ -335,6 +337,7 @@ export class JiraService {
       'timetracking',
       'issuetype',
       'issuelinks',
+      'parent',
       connection.storyPointsField,
     ].join(',');
     const authHeader = this.authHeader(connection);
@@ -374,10 +377,68 @@ export class JiraService {
       }));
   }
 
+  /**
+   * key -> {issueType, parentKey} for every issue in the current sync batch —
+   * built once up front so each issue can resolve its Epic/Story ancestry by
+   * walking this local map instead of making extra Jira API calls. Only
+   * covers issues fetched in this run; an issue whose parent lives outside
+   * the synced scope (a different project, say) simply can't be resolved.
+   */
+  private buildHierarchyIndex(issues: JiraIssue[]): Map<string, { issueType: string | null; parentKey: string | null }> {
+    return new Map(
+      issues.map((issue) => [
+        issue.key,
+        { issueType: issue.fields.issuetype?.name ?? null, parentKey: issue.fields.parent?.key ?? null },
+      ]),
+    );
+  }
+
+  /**
+   * Resolves `epicKey`/`storyKey` for one issue by walking `hierarchy`:
+   * a Story's parent is its Epic; a Task/Bug/Sub-task's parent is its Story
+   * (one more hop up to reach the Epic) or, if the team skips the Story
+   * tier, directly its Epic. Returns both null wherever the chain can't be
+   * followed (no parent, parent outside the synced batch, or an
+   * unrecognized parent type like a Sub-task's parent Task) rather than
+   * guessing.
+   */
+  private resolveEpicAndStoryKey(
+    issueType: string | null,
+    parentKey: string | null,
+    hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
+  ): { epicKey: string | null; storyKey: string | null } {
+    if (issueType === 'Epic' || !parentKey) {
+      return { epicKey: null, storyKey: null };
+    }
+
+    const parent = hierarchy.get(parentKey);
+    if (!parent || parent.issueType === 'Epic') {
+      // Parent type unknown (outside the synced batch) or directly an Epic — either way there's no Story tier in between.
+      return { epicKey: parentKey, storyKey: null };
+    }
+    if (parent.issueType === 'Story') {
+      return { epicKey: parent.parentKey, storyKey: parentKey };
+    }
+    // Parent is something else (e.g. a Sub-task's parent Task) — not part of the Epic/Story/Task hierarchy we track.
+    return { epicKey: null, storyKey: null };
+  }
+
   /** Maps one Jira issue to the fields TaskRecord cares about. Returns null fields where Jira has no real equivalent (bugCount, pmRating) rather than guessing. */
-  private mapIssueToTaskFields(issue: JiraIssue, storyPointsField: string) {
+  private mapIssueToTaskFields(
+    issue: JiraIssue,
+    storyPointsField: string,
+    hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
+  ) {
+    const issueType = issue.fields.issuetype?.name ?? null;
+
+    // Per this team's convention, only Task-type issues carry story points — Epics and Stories are pure groupings with no point value of their own.
     const storyPoints = issue.fields[storyPointsField];
-    const points = typeof storyPoints === 'number' && storyPoints > 0 ? Math.round(storyPoints) : DEFAULT_POINTS;
+    const points =
+      issueType === 'Task' && typeof storyPoints === 'number' && storyPoints > 0
+        ? Math.round(storyPoints)
+        : issueType === 'Task'
+          ? DEFAULT_POINTS
+          : 0;
 
     const priorityName = issue.fields.priority?.name;
     const complexity = (priorityName && PRIORITY_TO_COMPLEXITY[priorityName]) || DEFAULT_COMPLEXITY;
@@ -391,6 +452,8 @@ export class JiraService {
     const isDone = issue.fields.status?.statusCategory?.key === 'done';
     const completedAt = isDone && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
 
+    const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, issue.fields.parent?.key ?? null, hierarchy);
+
     return {
       taskName: issue.fields.summary,
       projectName: issue.fields.project?.name ?? 'Unknown Jira Project',
@@ -402,8 +465,10 @@ export class JiraService {
       points,
       completedAt,
       createdAt: new Date(issue.fields.created),
-      issueType: issue.fields.issuetype?.name ?? null,
+      issueType,
       blockedByIssues: this.findBlockingIssues(issue),
+      epicKey,
+      storyKey,
     };
   }
 
@@ -428,13 +493,22 @@ export class JiraService {
     }
   }
 
-  /** Upserts one issue into task_records, matched by jiraIssueKey — re-running a sync updates existing rows instead of duplicating. Returns 'skipped' for no-assignee or no-mapped-employee, recording the latter in `unmatched`. */
+  /**
+   * Upserts one issue into task_records, matched by jiraIssueKey —
+   * re-running a sync updates existing rows instead of duplicating. Returns
+   * 'skipped' for no-assignee or no-mapped-employee, recording the latter
+   * in `unmatched`. Note this applies to Epics and Stories too: one with no
+   * assignee in Jira won't sync, so the Task Management hierarchy will have
+   * no parent row for its children to nest under — assign Epics/Stories in
+   * Jira if you want them to anchor the grouping.
+   */
   private async syncOneIssue(
     issue: JiraIssue,
     storyPointsField: string,
+    hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
     unmatched: Map<string, UnmatchedAssignee>,
   ): Promise<'created' | 'updated' | 'skipped'> {
-    const mapped = this.mapIssueToTaskFields(issue, storyPointsField);
+    const mapped = this.mapIssueToTaskFields(issue, storyPointsField, hierarchy);
     if (!mapped.assigneeAccountId) {
       return 'skipped';
     }
@@ -456,6 +530,8 @@ export class JiraService {
       completedAt: mapped.completedAt,
       issueType: mapped.issueType,
       blockedByIssues: mapped.blockedByIssues,
+      epicKey: mapped.epicKey,
+      storyKey: mapped.storyKey,
     };
 
     const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
@@ -469,8 +545,15 @@ export class JiraService {
     return 'created';
   }
 
-  /** Runs syncOneIssue for every fetched issue and tallies the outcomes — extracted purely to keep syncTasksFromJira's own complexity down. */
+  /**
+   * Runs syncOneIssue for every fetched issue and tallies the outcomes —
+   * extracted purely to keep syncTasksFromJira's own complexity down. Builds
+   * the Epic/Story hierarchy index once from the full batch up front, since
+   * resolving any single issue's ancestry needs to see every other issue's
+   * parent link, not just its own.
+   */
   private async syncAllIssues(issues: JiraIssue[], storyPointsField: string) {
+    const hierarchy = this.buildHierarchyIndex(issues);
     let tasksCreated = 0;
     let tasksUpdated = 0;
     let tasksSkipped = 0;
@@ -479,7 +562,7 @@ export class JiraService {
 
     for (const issue of issues) {
       try {
-        const outcome = await this.syncOneIssue(issue, storyPointsField, unmatched);
+        const outcome = await this.syncOneIssue(issue, storyPointsField, hierarchy, unmatched);
         if (outcome === 'created') {
           tasksCreated++;
         } else if (outcome === 'updated') {

@@ -18,7 +18,7 @@ import {
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
-import { CloudSyncOutlined, LinkOutlined, FolderOutlined, PlusOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, LinkOutlined, FolderOutlined, PlusOutlined, ApartmentOutlined } from '@ant-design/icons';
 import {
   fetchJiraConfig,
   upsertJiraConfig,
@@ -32,10 +32,16 @@ import {
 import { fetchAllEmployees, createEmployee } from '../../services/employeeService';
 import { fetchAllEmployeeLevels } from '../../services/employeeLevelService';
 import { fetchAllEmployeeRoles } from '../../services/employeeRoleService';
+import { fetchAllProjects } from '../../services/projectService';
+import { fetchTasksForProject } from '../../services/taskService';
 import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../../types/jira';
 import { Employee } from '../../types/employee';
 import { EmployeeLevel } from '../../types/employeeLevel';
 import { EmployeeRole } from '../../types/employeeRole';
+import { ProjectSummary } from '../../types/project';
+import { TaskWithEmployee } from '../../types/evaluation';
+import { buildTaskHierarchy, TaskTreeRow } from '../../utils/taskHierarchy';
+import { IssueTypeTag } from '../../components/IssueTypeTag';
 
 const DEFAULT_TEMP_PASSWORD = 'Password123!';
 
@@ -108,6 +114,11 @@ export function AdminPage() {
   const [employeeLevels, setEmployeeLevels] = useState<EmployeeLevel[]>([]);
   const [employeeRoles, setEmployeeRoles] = useState<EmployeeRole[]>([]);
 
+  const [hierarchyProjects, setHierarchyProjects] = useState<ProjectSummary[]>([]);
+  const [selectedHierarchyProject, setSelectedHierarchyProject] = useState<string | undefined>(undefined);
+  const [hierarchyTasks, setHierarchyTasks] = useState<TaskWithEmployee[]>([]);
+  const [hierarchyLoading, setHierarchyLoading] = useState(false);
+
   const employeeLevelOptions = employeeLevels.map((l) => ({ value: l.name, label: l.name }));
   const employeeRoleOptions = employeeRoles.map((r) => ({ value: r.name, label: r.name }));
 
@@ -138,6 +149,24 @@ export function AdminPage() {
     }
   };
 
+  const loadHierarchyProjects = () => fetchAllProjects().then(setHierarchyProjects);
+
+  const handleSelectHierarchyProject = async (projectName: string | undefined) => {
+    setSelectedHierarchyProject(projectName);
+    if (!projectName) {
+      setHierarchyTasks([]);
+      return;
+    }
+    setHierarchyLoading(true);
+    try {
+      setHierarchyTasks(await fetchTasksForProject(projectName));
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to load tasks for this project'));
+    } finally {
+      setHierarchyLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchJiraConfig().then((summary) => {
       setConfig(summary);
@@ -153,6 +182,7 @@ export function AdminPage() {
     loadEmployeeLevels();
     loadEmployeeRoles();
     loadEmployees();
+    loadHierarchyProjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -451,6 +481,63 @@ export function AdminPage() {
             { title: 'Error', render: (_, record: JiraSyncLog) => record.errorMessage ?? '—' },
           ]}
         />
+      </Card>
+
+      <Card
+        title={
+          <Space>
+            <ApartmentOutlined />
+            Project Task Hierarchy
+          </Space>
+        }
+      >
+        <Typography.Paragraph type="secondary">
+          Read-only view of a project's Epic → User Story → Task config tree. Only Task issues carry real points —
+          Epic/Story rows show the sum of their descendants' points instead.
+        </Typography.Paragraph>
+        <Select
+          allowClear
+          showSearch
+          placeholder="Select a project"
+          style={{ width: 320, marginBottom: 16 }}
+          value={selectedHierarchyProject}
+          onChange={handleSelectHierarchyProject}
+          options={hierarchyProjects.map((p) => ({ value: p.projectName, label: p.projectName }))}
+          optionFilterProp="label"
+        />
+        {selectedHierarchyProject && (
+          <Table
+            rowKey="id"
+            size="small"
+            loading={hierarchyLoading}
+            dataSource={buildTaskHierarchy(hierarchyTasks)}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              {
+                title: 'Task',
+                render: (_, record: TaskTreeRow) => record.taskCode ?? record.taskName,
+              },
+              {
+                title: 'Type',
+                render: (_, record: TaskTreeRow) => <IssueTypeTag issueType={record.issueType} />,
+              },
+              { title: 'Employee', render: (_, record: TaskTreeRow) => record.employee.fullName },
+              {
+                title: 'Points',
+                render: (_, record: TaskTreeRow) => (record.children ? record.rollupPoints : record.points),
+              },
+              { title: 'Estimate hrs', dataIndex: 'estimateHours' },
+              {
+                title: 'Actual hrs',
+                render: (_, record: TaskTreeRow) => record.actualHours ?? '—',
+              },
+              {
+                title: 'Completed',
+                render: (_, record: TaskTreeRow) => record.completedAt ?? '—',
+              },
+            ]}
+          />
+        )}
       </Card>
 
       <Modal

@@ -31,6 +31,8 @@ export interface TaskRecord {
   employeeId: string;
   projectName: string;
   taskName: string;
+  /** Hierarchy code shown in Task Management instead of the title — e.g. "Epic-1", "US-1.1", "Task-1.1.1", "SubTask-1.1.1.1". Null falls back to showing the title. */
+  taskCode: string | null;
   estimateHours: number;
   actualHours: number | null;
   complexity: number;
@@ -46,8 +48,10 @@ export interface TaskRecord {
   blockedByIssues: BlockedByIssueRef[];
   /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
   projectSprintId: string | null;
-  /** The Epic this task belongs to (that Epic's own jiraIssueKey) — null for the Epic issue itself and for tasks with no Epic. */
+  /** The Epic this issue ultimately belongs to (that Epic's own jiraIssueKey) — null for the Epic issue itself and for issues with no Epic. */
   epicKey: string | null;
+  /** The User Story this Task/Bug/Sub-task's immediate parent is (that Story's own jiraIssueKey) — null for Epics, Stories themselves, and leaves linked directly to an Epic with no Story in between. */
+  storyKey: string | null;
 }
 
 /** What `GET /tasks/projects/:projectName/tasks` returns — a task with its assignee joined in. */

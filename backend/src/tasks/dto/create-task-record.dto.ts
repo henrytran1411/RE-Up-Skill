@@ -10,6 +10,11 @@ export class CreateTaskRecordDto {
   @IsString()
   taskName: string;
 
+  /** Hierarchy code shown in Task Management instead of the title — e.g. "Epic-1", "US-1.1", "Task-1.1.1", "SubTask-1.1.1.1". */
+  @IsString()
+  @IsOptional()
+  taskCode?: string;
+
   @IsNumber()
   estimateHours: number;
 

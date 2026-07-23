@@ -36,6 +36,17 @@ export class TaskRecord {
   @Column({ length: 200 })
   taskName: string;
 
+  /**
+   * Human-friendly hierarchy code shown in Task Management instead of the
+   * title — e.g. `Epic-1`, `US-1.1` (Story 1 of Epic 1), `Task-1.1.1` (Task 1
+   * of that Story), `SubTask-1.1.1.1`/`Bug-1.1.1.1` (SubTask/Bug 1 of that
+   * Task). Not derived automatically — set manually or during Jira sync.
+   * Null for issues with no assigned code (e.g. ad-hoc tasks), which fall
+   * back to showing the title instead.
+   */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  taskCode: string | null;
+
   @Column({ type: 'decimal', precision: 6, scale: 2, transformer: DecimalColumnTransformer })
   estimateHours: number;
 
@@ -76,9 +87,13 @@ export class TaskRecord {
   @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
   blockedByIssues: BlockedByIssueRef[];
 
-  /** The Epic this task belongs to — the Epic's own `jiraIssueKey` (or, for non-Jira example data, any unique key). Null for the Epic issue itself and for tasks with no Epic. */
+  /** The Epic this issue ultimately belongs to — the Epic's own `jiraIssueKey` (or, for non-Jira example data, any unique key). Set on both a Story (its direct parent) and a Task/Bug/Sub-task (its Story's parent, resolved during sync). Null for the Epic issue itself and for issues with no Epic. */
   @Column({ type: 'varchar', length: 50, nullable: true })
   epicKey: string | null;
+
+  /** The User Story this Task/Bug/Sub-task's immediate parent is — that Story's own `jiraIssueKey`. Null for Epics, for Stories themselves, and for leaf issues linked directly to an Epic with no intervening Story. */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  storyKey: string | null;
 
   /** Which project sprint (see ProjectSprint.id) this task was planned/worked in. Used for the project health check's burndown chart — null if not assigned to a sprint. Not an enforced FK — same loose-reference style as Project.managerId. */
   @Column({ type: 'uuid', nullable: true })

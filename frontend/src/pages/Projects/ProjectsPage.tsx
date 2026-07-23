@@ -74,6 +74,7 @@ import { ProjectHealthReport, EpicHealth } from '../../types/projectHealth';
 import { ProjectSprint } from '../../types/projectSprint';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
+import { buildTaskHierarchy, TaskTreeRow } from '../../utils/taskHierarchy';
 import { useAuth } from '../../context/AuthContext';
 import { Role, ProjectStatus } from '../../types/common';
 
@@ -99,6 +100,7 @@ function errorMessage(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
 
 export function ProjectsPage() {
   const { currentEmployee } = useAuth();
@@ -276,6 +278,7 @@ export function ProjectsPage() {
     taskForm.setFieldsValue({
       employeeId: task.employeeId,
       taskName: task.taskName,
+      taskCode: task.taskCode ?? undefined,
       estimateHours: task.estimateHours,
       complexity: task.complexity,
       points: task.points,
@@ -568,7 +571,7 @@ export function ProjectsPage() {
         open={detail !== null || detailLoading}
         onCancel={() => setDetail(null)}
         footer={null}
-        width={900}
+        width="90%"
       >
         {detailLoading || !detail ? (
           'Loading…'
@@ -716,9 +719,12 @@ export function ProjectsPage() {
                             size="small"
                             loading={tasksLoading}
                             pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['10', '20', '50'] }}
-                            dataSource={projectTasks}
+                            dataSource={buildTaskHierarchy(projectTasks)}
                             columns={[
-                              { title: 'Task', dataIndex: 'taskName' },
+                              {
+                                title: 'Task',
+                                render: (_, record: TaskTreeRow) => record.taskCode ?? record.taskName,
+                              },
                               {
                                 title: 'Type',
                                 render: (_, record: TaskWithEmployee) => <IssueTypeTag issueType={record.issueType} />,
@@ -748,7 +754,11 @@ export function ProjectsPage() {
                                 title: 'Actual hrs',
                                 render: (_, record: TaskWithEmployee) => record.actualHours ?? '—',
                               },
-                              { title: 'Points', dataIndex: 'points' },
+                              {
+                                title: 'Points',
+                                render: (_, record: TaskTreeRow) =>
+                                  record.children ? record.rollupPoints : record.points,
+                              },
                               { title: 'Complexity', dataIndex: 'complexity' },
                               { title: 'Bugs', dataIndex: 'bugCount' },
                               {
@@ -1062,6 +1072,13 @@ export function ProjectsPage() {
           </Form.Item>
           <Form.Item name="taskName" label="Task name" rules={[{ required: true }]}>
             <Input />
+          </Form.Item>
+          <Form.Item
+            name="taskCode"
+            label="Task Code"
+            extra="Shown instead of the title in Task Management, e.g. Epic-1, US-1.1, Task-1.1.1, SubTask-1.1.1.1"
+          >
+            <Input placeholder="e.g. Task-1.1.1" />
           </Form.Item>
           <Space style={{ width: '100%' }}>
             <Form.Item name="estimateHours" label="Estimate hours" rules={[{ required: true }]}>
