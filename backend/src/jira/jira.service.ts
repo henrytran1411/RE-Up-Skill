@@ -7,6 +7,7 @@ import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
 import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
+import { ProjectSprintsService } from '../projects/project-sprints.service';
 import { TaskCodeService } from '../tasks/task-code.service';
 
 /**
@@ -87,6 +88,21 @@ export interface JiraUserSummary {
   accountType: string;
 }
 
+/** One entry from Jira's "Sprint" custom field (schema `gh-sprint`) — an issue can carry several if it was moved forward through more than one. */
+interface JiraSprintRef {
+  id: number;
+  name: string;
+  state: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+interface JiraFieldMeta {
+  id: string;
+  name?: string;
+  schema?: { custom?: string };
+}
+
 /** Resolved connection details for one sync run — always from the DB JiraConfig row (no env-var fallback). */
 interface JiraConnection {
   baseUrl: string;
@@ -126,6 +142,10 @@ export interface JiraSyncSummary {
   taskCodesAssigned?: number;
   /** Set only by a single-project sync — employee accounts auto-created for previously-unmatched assignees, so their tasks could be synced in the same run. Each has the default temp password and a best-effort guessed email — review before handing out. */
   employeesCreated?: { fullName: string; email: string }[];
+  /** Set only by a single-project sync — new ProjectSprint rows created from Jira's own Sprint field, appended after whatever sprints the project already had. */
+  sprintsCreated?: number;
+  /** Set only by a single-project sync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
+  tasksAssignedToSprint?: number;
 }
 
 export interface JiraProjectSyncSummary {
@@ -171,6 +191,7 @@ export class JiraService {
     private readonly configRepository: Repository<JiraConfig>,
     private readonly employeesService: EmployeesService,
     private readonly projectsService: ProjectsService,
+    private readonly projectSprintsService: ProjectSprintsService,
     private readonly taskCodeService: TaskCodeService,
   ) {}
 
@@ -322,6 +343,50 @@ export class JiraService {
     return users;
   }
 
+  /**
+   * Finds the custom field id backing Jira's own "Sprint" field (schema
+   * `com.pyxis.greenhopper.jira:gh-sprint`) on this site — its numeric id
+   * varies per Jira instance, the same way storyPointsField does, so this
+   * discovers it rather than assuming a fixed id. Returns null (rather than
+   * throwing) if the site has no such field — e.g. no Jira Software/Agile
+   * boards enabled — so callers can just skip sprint sync gracefully.
+   */
+  private async resolveSprintFieldId(connection: JiraConnection): Promise<string | null> {
+    try {
+      const baseUrl = connection.baseUrl.replace(/\/$/, '');
+      const response = await fetch(`${baseUrl}/rest/api/3/field`, {
+        headers: { Authorization: this.authHeader(connection), Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        this.logger.warn(`Could not list Jira fields to find the Sprint field (${response.status})`);
+        return null;
+      }
+      const fields = (await response.json()) as JiraFieldMeta[];
+      return fields.find((f) => f.schema?.custom === 'com.pyxis.greenhopper.jira:gh-sprint')?.id ?? null;
+    } catch (err) {
+      this.logger.warn(`Could not resolve the Jira Sprint field: ${err instanceof Error ? err.message : err}`);
+      return null;
+    }
+  }
+
+  /**
+   * An issue can carry several sprints in this field — it's appended to
+   * every time the issue moves to a new sprint without finishing the last
+   * one. Picks the one with the latest startDate rather than trusting the
+   * array's own order, since that's almost always the current/most
+   * relevant sprint for this task regardless of how Jira ordered the list.
+   */
+  private pickCurrentSprint(rawValue: unknown): JiraSprintRef | null {
+    if (!Array.isArray(rawValue) || rawValue.length === 0) {
+      return null;
+    }
+    const sprints = rawValue as JiraSprintRef[];
+    return sprints.reduce<JiraSprintRef | null>((latest, sprint) => {
+      if (!latest) return sprint;
+      return (sprint.startDate ?? '') > (latest.startDate ?? '') ? sprint : latest;
+    }, null);
+  }
+
   /** The Jira projects currently in scope — every project the account can see when syncAllProjects is on, else just the ones picked on the Admin page. */
   private async resolveScopedProjects(connection: JiraConnection): Promise<JiraProjectSummary[]> {
     const allProjects = await this.fetchAllProjects(connection);
@@ -332,8 +397,8 @@ export class JiraService {
     return allProjects.filter((project) => selectedKeys.has(project.key));
   }
 
-  /** Paginates through every matching issue for one JQL query via the cursor-based /search/jql endpoint. */
-  private async fetchIssues(jql: string, connection: JiraConnection): Promise<JiraIssue[]> {
+  /** Paginates through every matching issue for one JQL query via the cursor-based /search/jql endpoint. `sprintFieldId` is only passed by syncSingleProjectFromJira — omitted, the bulk sync's fields stay exactly as before. */
+  private async fetchIssues(jql: string, connection: JiraConnection, sprintFieldId?: string | null): Promise<JiraIssue[]> {
     const baseUrl = connection.baseUrl.replace(/\/$/, '');
     const fields = [
       'summary',
@@ -348,6 +413,7 @@ export class JiraService {
       'issuelinks',
       'parent',
       connection.storyPointsField,
+      ...(sprintFieldId ? [sprintFieldId] : []),
     ].join(',');
     const authHeader = this.authHeader(connection);
 
@@ -432,11 +498,12 @@ export class JiraService {
     return { epicKey: null, storyKey: null };
   }
 
-  /** Maps one Jira issue to the fields TaskRecord cares about. Returns null fields where Jira has no real equivalent (bugCount, pmRating) rather than guessing. */
+  /** Maps one Jira issue to the fields TaskRecord cares about. Returns null fields where Jira has no real equivalent (bugCount, pmRating) rather than guessing. `sprintFieldId` is only passed by syncSingleProjectFromJira. */
   private mapIssueToTaskFields(
     issue: JiraIssue,
     storyPointsField: string,
     hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
+    sprintFieldId?: string | null,
   ) {
     const issueType = issue.fields.issuetype?.name ?? null;
     // Per this team's convention, only Task-type issues carry their own points/estimate — Epic and Story roll theirs
@@ -465,6 +532,7 @@ export class JiraService {
     const completedAt = isDone && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
 
     const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, issue.fields.parent?.key ?? null, hierarchy);
+    const jiraSprint = sprintFieldId ? this.pickCurrentSprint(issue.fields[sprintFieldId]) : null;
 
     return {
       taskName: issue.fields.summary,
@@ -481,6 +549,7 @@ export class JiraService {
       blockedByIssues: this.findBlockingIssues(issue),
       epicKey,
       storyKey,
+      jiraSprint,
     };
   }
 
@@ -605,22 +674,42 @@ export class JiraService {
    * assignee in Jira won't sync, so the Task Management hierarchy will have
    * no parent row for its children to nest under — assign Epics/Stories in
    * Jira if you want them to anchor the grouping.
+   *
+   * When `sprintFieldId` is given and the issue carries a Jira sprint (see
+   * pickCurrentSprint), finds or creates the matching ProjectSprint via
+   * ProjectSprintsService.findOrCreateFromJira and sets the task's
+   * projectSprintId to it — but only for issues that actually sync
+   * (skipped ones never get a sprint created for them). When the issue has
+   * no sprint data, projectSprintId is left untouched on updates, so a
+   * manually-assigned sprint doesn't get silently cleared.
    */
   private async syncOneIssue(
     issue: JiraIssue,
     storyPointsField: string,
     hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
     unmatched: Map<string, UnmatchedAssignee>,
-  ): Promise<'created' | 'updated' | 'skipped'> {
-    const mapped = this.mapIssueToTaskFields(issue, storyPointsField, hierarchy);
+    sprintFieldId: string | null,
+  ): Promise<{ outcome: 'created' | 'updated' | 'skipped'; sprintCreated: boolean; sprintAssigned: boolean }> {
+    const mapped = this.mapIssueToTaskFields(issue, storyPointsField, hierarchy, sprintFieldId);
     if (!mapped.assigneeAccountId) {
-      return 'skipped';
+      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false };
     }
 
     const employee = await this.employeesService.findByJiraAccountId(mapped.assigneeAccountId);
     if (!employee) {
       this.recordUnmatched(unmatched, mapped.assigneeAccountId, mapped.assigneeDisplayName);
-      return 'skipped';
+      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false };
+    }
+
+    let sprintCreated = false;
+    let projectSprintId: string | undefined;
+    if (mapped.jiraSprint) {
+      const { sprint, wasCreated } = await this.projectSprintsService.findOrCreateFromJira(
+        mapped.projectName,
+        mapped.jiraSprint,
+      );
+      projectSprintId = sprint.id;
+      sprintCreated = wasCreated;
     }
 
     const taskFields = {
@@ -636,17 +725,18 @@ export class JiraService {
       blockedByIssues: mapped.blockedByIssues,
       epicKey: mapped.epicKey,
       storyKey: mapped.storyKey,
+      ...(projectSprintId !== undefined ? { projectSprintId } : {}),
     };
 
     const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
     if (existing) {
       await this.taskRepository.save(Object.assign(existing, taskFields));
-      return 'updated';
+      return { outcome: 'updated', sprintCreated, sprintAssigned: projectSprintId !== undefined };
     }
 
     const task = this.taskRepository.create({ ...taskFields, jiraIssueKey: issue.key, createdAt: mapped.createdAt });
     await this.taskRepository.save(task);
-    return 'created';
+    return { outcome: 'created', sprintCreated, sprintAssigned: projectSprintId !== undefined };
   }
 
   /**
@@ -656,17 +746,25 @@ export class JiraService {
    * resolving any single issue's ancestry needs to see every other issue's
    * parent link, not just its own.
    */
-  private async syncAllIssues(issues: JiraIssue[], storyPointsField: string) {
+  private async syncAllIssues(issues: JiraIssue[], storyPointsField: string, sprintFieldId: string | null = null) {
     const hierarchy = this.buildHierarchyIndex(issues);
     let tasksCreated = 0;
     let tasksUpdated = 0;
     let tasksSkipped = 0;
+    let sprintsCreated = 0;
+    let tasksAssignedToSprint = 0;
     const issueErrors: string[] = [];
     const unmatched = new Map<string, UnmatchedAssignee>();
 
     for (const issue of issues) {
       try {
-        const outcome = await this.syncOneIssue(issue, storyPointsField, hierarchy, unmatched);
+        const { outcome, sprintCreated, sprintAssigned } = await this.syncOneIssue(
+          issue,
+          storyPointsField,
+          hierarchy,
+          unmatched,
+          sprintFieldId,
+        );
         if (outcome === 'created') {
           tasksCreated++;
         } else if (outcome === 'updated') {
@@ -674,13 +772,19 @@ export class JiraService {
         } else {
           tasksSkipped++;
         }
+        if (sprintCreated) {
+          sprintsCreated++;
+        }
+        if (sprintAssigned) {
+          tasksAssignedToSprint++;
+        }
       } catch (err) {
         tasksSkipped++;
         issueErrors.push(`${issue.key}: ${err instanceof Error ? err.message : 'unknown error'}`);
       }
     }
 
-    return { tasksCreated, tasksUpdated, tasksSkipped, issueErrors, unmatched };
+    return { tasksCreated, tasksUpdated, tasksSkipped, sprintsCreated, tasksAssignedToSprint, issueErrors, unmatched };
   }
 
   /**
@@ -761,12 +865,14 @@ export class JiraService {
     return summary;
   }
 
-  /** Shared by syncTasksFromJira and syncSingleProjectFromJira: upserts `issues` (already fetched) and builds the resulting summary, without logging/saving — callers do that themselves since their log messages differ. */
-  private async fetchAndSyncIssues(issues: JiraIssue[], connection: JiraConnection): Promise<{ summary: JiraSyncSummary }> {
-    const { tasksCreated, tasksUpdated, tasksSkipped, issueErrors, unmatched } = await this.syncAllIssues(
-      issues,
-      connection.storyPointsField,
-    );
+  /** Shared by syncTasksFromJira and syncSingleProjectFromJira: upserts `issues` (already fetched) and builds the resulting summary, without logging/saving — callers do that themselves since their log messages differ. `sprintFieldId` is only passed by syncSingleProjectFromJira. */
+  private async fetchAndSyncIssues(
+    issues: JiraIssue[],
+    connection: JiraConnection,
+    sprintFieldId: string | null = null,
+  ): Promise<{ summary: JiraSyncSummary }> {
+    const { tasksCreated, tasksUpdated, tasksSkipped, sprintsCreated, tasksAssignedToSprint, issueErrors, unmatched } =
+      await this.syncAllIssues(issues, connection.storyPointsField, sprintFieldId);
     const summary: JiraSyncSummary = {
       status: issueErrors.length === 0 ? JiraSyncStatus.SUCCESS : JiraSyncStatus.PARTIAL,
       issuesFetched: issues.length,
@@ -775,6 +881,7 @@ export class JiraService {
       tasksSkipped,
       errorMessage: issueErrors.length > 0 ? issueErrors.slice(0, 20).join('; ') : null,
       unmatchedAssignees: Array.from(unmatched.values()),
+      ...(sprintFieldId ? { sprintsCreated, tasksAssignedToSprint } : {}),
     };
     return { summary };
   }
@@ -790,6 +897,12 @@ export class JiraService {
    * guessed email collides with) — see autoCreateEmployeesForUnmatched —
    * then re-syncs the same already-fetched issues so their tasks land in
    * the same run instead of needing a separate manual mapping pass.
+   *
+   * If the project has Jira sprints defined and an issue is assigned into
+   * one, this also finds-or-creates the matching ProjectSprint (see
+   * ProjectSprintsService.findOrCreateFromJira) and assigns the task to
+   * it — see pickCurrentSprint for how the "current" sprint is chosen when
+   * an issue has moved through more than one.
    *
    * After that, recomputes every synced issue's `taskCode`
    * (Epic-1/US-1.1/Task-1.1.1/Bug-1.1.1.1/SubTask-1.1.1.1) via
@@ -808,10 +921,12 @@ export class JiraService {
       return summary;
     }
 
+    const sprintFieldId = await this.resolveSprintFieldId(connection);
+
     const jql = `project in ("${projectKey.replace(/"/g, '')}") order by updated asc`;
     let issues: JiraIssue[];
     try {
-      issues = await this.fetchIssues(jql, connection);
+      issues = await this.fetchIssues(jql, connection, sprintFieldId);
     } catch (err) {
       const summary = this.emptySummary(
         JiraSyncStatus.FAILED,
@@ -832,13 +947,13 @@ export class JiraService {
       return summary;
     }
 
-    let { summary } = await this.fetchAndSyncIssues(issues, connection);
+    let { summary } = await this.fetchAndSyncIssues(issues, connection, sprintFieldId);
 
     if (summary.unmatchedAssignees.length > 0) {
       const employeesCreated = await this.autoCreateEmployeesForUnmatched(summary.unmatchedAssignees, connection);
       if (employeesCreated.length > 0) {
         // Re-sync the same already-fetched issues now that these accounts exist, so their tasks are picked up in this same run.
-        const resynced = await this.fetchAndSyncIssues(issues, connection);
+        const resynced = await this.fetchAndSyncIssues(issues, connection, sprintFieldId);
         summary = resynced.summary;
         summary.employeesCreated = employeesCreated;
       }
@@ -850,7 +965,7 @@ export class JiraService {
     }
 
     this.logger.log(
-      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped, ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped, ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

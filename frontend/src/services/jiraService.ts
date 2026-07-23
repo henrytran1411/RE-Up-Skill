@@ -39,6 +39,10 @@ export interface JiraSyncSummary {
   taskCodesAssigned?: number;
   /** Set only by runJiraSingleProjectSync — employee accounts auto-created for previously-unmatched assignees. Each has the default temp password and a best-effort guessed email — review before handing out. */
   employeesCreated?: { fullName: string; email: string }[];
+  /** Set only by runJiraSingleProjectSync — new ProjectSprint rows created from Jira's own Sprint field. */
+  sprintsCreated?: number;
+  /** Set only by runJiraSingleProjectSync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
+  tasksAssignedToSprint?: number;
 }
 
 export async function runJiraSync(): Promise<JiraSyncSummary> {

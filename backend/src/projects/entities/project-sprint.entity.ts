@@ -33,6 +33,10 @@ export class ProjectSprint {
   @Column({ type: 'text', nullable: true })
   notes: string | null;
 
+  /** Jira's own sprint id (from the "Sprint" custom field) when this row was synced from Jira rather than defined by hand — the stable dedup key across re-syncs, since a sprint's name/dates aren't safe to key off. Null for manually-created sprints. */
+  @Column({ type: 'int', nullable: true })
+  jiraSprintId: number | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

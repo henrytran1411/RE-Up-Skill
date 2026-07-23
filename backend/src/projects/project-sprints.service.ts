@@ -34,6 +34,55 @@ export class ProjectSprintsService {
     return this.sprintRepository.find({ where: { projectName }, order: { sprintNumber: 'ASC' } });
   }
 
+  /**
+   * Finds the ProjectSprint row already synced from this Jira sprint (by its
+   * stable `jiraSprintId`), or creates one. New rows are inserted into the
+   * correct chronological slot by startDate among ALL of this project's
+   * sprints (manual or Jira-sourced) rather than just appended — issues
+   * sync in Jira's own "updated" order, not sprint date order, so blindly
+   * appending would leave e.g. "Sprint 8" numbered before "Sprint 7".
+   * Renumbering existing rows here is safe: nothing references a sprint by
+   * its number, only by `id` (TaskRecord.projectSprintId) — sprintNumber is
+   * purely a display label. Called once per issue during a Jira sync, not
+   * user-facing, so it skips the PM-ownership guard the CRUD methods below
+   * enforce — the sync endpoint itself is already Admin-only.
+   */
+  async findOrCreateFromJira(
+    projectName: string,
+    jiraSprint: { id: number; name: string; startDate?: string; endDate?: string },
+  ): Promise<{ sprint: ProjectSprint; wasCreated: boolean }> {
+    const existing = await this.sprintRepository.findOne({ where: { projectName, jiraSprintId: jiraSprint.id } });
+    if (existing) {
+      return { sprint: existing, wasCreated: false };
+    }
+
+    const startDate = (jiraSprint.startDate ?? jiraSprint.endDate ?? new Date().toISOString()).slice(0, 10);
+    const endDate = (jiraSprint.endDate ?? jiraSprint.startDate ?? new Date().toISOString()).slice(0, 10);
+
+    const allSprints = await this.sprintRepository.find({ where: { projectName }, order: { sprintNumber: 'ASC' } });
+    const insertIndex = allSprints.findIndex((s) => s.startDate > startDate);
+    const newSprintNumber = insertIndex === -1 ? allSprints.length + 1 : allSprints[insertIndex].sprintNumber;
+
+    if (insertIndex !== -1) {
+      // Shift highest-numbered first so every move lands on a currently-free number, avoiding a transient unique-constraint collision.
+      for (const s of allSprints.slice(insertIndex).reverse()) {
+        await this.sprintRepository.update(s.id, { sprintNumber: s.sprintNumber + 1 });
+      }
+    }
+
+    const sprint = await this.sprintRepository.save(
+      this.sprintRepository.create({
+        projectName,
+        sprintNumber: newSprintNumber,
+        name: jiraSprint.name,
+        startDate,
+        endDate,
+        jiraSprintId: jiraSprint.id,
+      }),
+    );
+    return { sprint, wasCreated: true };
+  }
+
   private async findOneOrFail(projectName: string, id: string): Promise<ProjectSprint> {
     const sprint = await this.sprintRepository.findOne({ where: { id, projectName } });
     if (!sprint) {
