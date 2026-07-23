@@ -2,11 +2,14 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Put } from '@nestjs/
 import { ProjectsService } from './projects.service';
 import { ProjectSprintsService } from './project-sprints.service';
 import { ProjectContributionsService } from './project-contributions.service';
+import { ProjectNotesService } from './project-notes.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpsertProjectDto } from './dto/upsert-project.dto';
 import { CreateProjectSprintDto } from './dto/create-project-sprint.dto';
 import { UpdateProjectSprintDto } from './dto/update-project-sprint.dto';
 import { SetProjectContributionDto } from './dto/set-project-contribution.dto';
+import { CreateProjectNoteDto } from './dto/create-project-note.dto';
+import { UpdateProjectNoteDto } from './dto/update-project-note.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -17,6 +20,7 @@ export class ProjectsController {
     private readonly projectsService: ProjectsService,
     private readonly projectSprintsService: ProjectSprintsService,
     private readonly projectContributionsService: ProjectContributionsService,
+    private readonly projectNotesService: ProjectNotesService,
   ) {}
 
   /** Stand up a new project record — HR/Admin only. Doesn't require any tasks to exist yet. */
@@ -100,5 +104,38 @@ export class ProjectsController {
   ) {
     await this.projectContributionsService.setRate(employeeId, name, dto.totalSalary);
     return { totalSalary: dto.totalSalary };
+  }
+
+  /** A running journal of PM notes for one project — most recent first. */
+  @Get(':name/notes')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  listNotes(@Param('name') name: string) {
+    return this.projectNotesService.findAllForProject(name);
+  }
+
+  /** A PM may only add notes to a project they manage. */
+  @Post(':name/notes')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  createNote(@Param('name') name: string, @Body() dto: CreateProjectNoteDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.projectNotesService.create(name, dto, user);
+  }
+
+  /** Only the note's own author, or an Admin, may edit it. */
+  @Patch(':name/notes/:id')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  updateNote(
+    @Param('name') name: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateProjectNoteDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.projectNotesService.update(name, id, dto, user);
+  }
+
+  /** Only the note's own author, or an Admin, may delete it. */
+  @Delete(':name/notes/:id')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  deleteNote(@Param('name') name: string, @Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.projectNotesService.remove(name, id, user);
   }
 }

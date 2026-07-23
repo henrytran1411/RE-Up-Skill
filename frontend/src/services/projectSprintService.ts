@@ -11,6 +11,7 @@ export interface ProjectSprintPayload {
   name?: string;
   startDate: string;
   endDate: string;
+  notes?: string;
 }
 
 export async function createSprint(projectName: string, payload: ProjectSprintPayload): Promise<ProjectSprint> {

@@ -16,4 +16,8 @@ export class CreateProjectSprintDto {
 
   @IsDateString()
   endDate: string;
+
+  @IsString()
+  @IsOptional()
+  notes?: string;
 }

@@ -29,6 +29,10 @@ export class ProjectSprint {
   @Column({ type: 'date' })
   endDate: string;
 
+  /** Free-form planning/retrospective notes for this sprint — optional. */
+  @Column({ type: 'text', nullable: true })
+  notes: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

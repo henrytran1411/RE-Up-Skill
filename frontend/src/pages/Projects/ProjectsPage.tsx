@@ -58,6 +58,12 @@ import {
   deleteSprint,
   generateSprints,
 } from '../../services/projectSprintService';
+import {
+  fetchNotesForProject,
+  createProjectNote,
+  updateProjectNote,
+  deleteProjectNote,
+} from '../../services/projectNoteService';
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
 import { ProjectContributionChart } from '../../components/ProjectContributionChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
@@ -72,6 +78,7 @@ import {
 } from '../../types/project';
 import { ProjectHealthReport, EpicHealth } from '../../types/projectHealth';
 import { ProjectSprint } from '../../types/projectSprint';
+import { ProjectNote } from '../../types/projectNote';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
 import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
@@ -128,6 +135,13 @@ export function ProjectsPage() {
   const [savingSprint, setSavingSprint] = useState(false);
   const [generatingSprints, setGeneratingSprints] = useState(false);
   const [sprintForm] = Form.useForm();
+  const [notes, setNotes] = useState<ProjectNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [editingNote, setEditingNote] = useState<ProjectNote | null>(null);
+  const [savingNote, setSavingNote] = useState(false);
+  const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
+  const [noteForm] = Form.useForm();
   const [savingTaskSprintId, setSavingTaskSprintId] = useState<string | null>(null);
   const [savingEpicDependencyKey, setSavingEpicDependencyKey] = useState<string | null>(null);
   const [editingSalaryId, setEditingSalaryId] = useState<string | null>(null);
@@ -188,6 +202,18 @@ export function ProjectsPage() {
     }
   };
 
+  const loadNotes = async (projectName: string) => {
+    if (!canManageTasks) return;
+    setNotesLoading(true);
+    try {
+      setNotes(await fetchNotesForProject(projectName));
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to load notes'));
+    } finally {
+      setNotesLoading(false);
+    }
+  };
+
   const openDetail = async (projectName: string) => {
     setDetailLoading(true);
     try {
@@ -198,7 +224,12 @@ export function ProjectsPage() {
       setStartDateInput(overview.startDate ? dayjs(overview.startDate) : null);
       setTargetEndDateInput(overview.targetEndDate ? dayjs(overview.targetEndDate) : null);
       setEditingSalaryId(null);
-      await Promise.all([loadProjectTasks(projectName), loadProjectHealth(projectName), loadSprints(projectName)]);
+      await Promise.all([
+        loadProjectTasks(projectName),
+        loadProjectHealth(projectName),
+        loadSprints(projectName),
+        loadNotes(projectName),
+      ]);
     } finally {
       setDetailLoading(false);
     }
@@ -210,7 +241,12 @@ export function ProjectsPage() {
     setNameInput(overview.projectName);
     setStartDateInput(overview.startDate ? dayjs(overview.startDate) : null);
     setTargetEndDateInput(overview.targetEndDate ? dayjs(overview.targetEndDate) : null);
-    await Promise.all([loadProjectTasks(projectName), loadProjectHealth(projectName), loadSprints(projectName)]);
+    await Promise.all([
+      loadProjectTasks(projectName),
+      loadProjectHealth(projectName),
+      loadSprints(projectName),
+      loadNotes(projectName),
+    ]);
   };
 
   const handleSaveSettings = async () => {
@@ -339,6 +375,7 @@ export function ProjectsPage() {
       name: sprint.name ?? undefined,
       startDate: dayjs(sprint.startDate),
       endDate: dayjs(sprint.endDate),
+      notes: sprint.notes ?? undefined,
     });
     setSprintModalOpen(true);
   };
@@ -351,6 +388,7 @@ export function ProjectsPage() {
       name: values.name || undefined,
       startDate: values.startDate.format('YYYY-MM-DD'),
       endDate: values.endDate.format('YYYY-MM-DD'),
+      notes: values.notes || undefined,
     };
     setSavingSprint(true);
     try {
@@ -392,6 +430,53 @@ export function ProjectsPage() {
       message.error(errorMessage(err, 'Failed to generate sprints'));
     } finally {
       setGeneratingSprints(false);
+    }
+  };
+
+  const openNoteCreateModal = () => {
+    setEditingNote(null);
+    noteForm.resetFields();
+    setNoteModalOpen(true);
+  };
+
+  const openNoteEditModal = (note: ProjectNote) => {
+    setEditingNote(note);
+    noteForm.setFieldsValue({ content: note.content });
+    setNoteModalOpen(true);
+  };
+
+  const handleNoteSubmit = async () => {
+    if (!detail) return;
+    const values = await noteForm.validateFields();
+    setSavingNote(true);
+    try {
+      if (editingNote) {
+        await updateProjectNote(detail.projectName, editingNote.id, values.content);
+        message.success('Note updated');
+      } else {
+        await createProjectNote(detail.projectName, values.content);
+        message.success('Note added');
+      }
+      setNoteModalOpen(false);
+      await loadNotes(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to save note'));
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleNoteDelete = async (note: ProjectNote) => {
+    if (!detail) return;
+    setDeletingNoteId(note.id);
+    try {
+      await deleteProjectNote(detail.projectName, note.id);
+      message.success('Note deleted');
+      await loadNotes(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to delete note'));
+    } finally {
+      setDeletingNoteId(null);
     }
   };
 
@@ -842,6 +927,7 @@ export function ProjectsPage() {
                               { title: 'Name', render: (_, s: ProjectSprint) => s.name ?? '—' },
                               { title: 'Start', dataIndex: 'startDate' },
                               { title: 'End', dataIndex: 'endDate' },
+                              { title: 'Notes', render: (_, s: ProjectSprint) => s.notes ?? '—' },
                               {
                                 title: 'Actions',
                                 render: (_, s: ProjectSprint) => (
@@ -859,6 +945,74 @@ export function ProjectsPage() {
                               },
                             ]}
                           />
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(canManageTasks
+                ? [
+                    {
+                      key: 'notes',
+                      label: 'Notes',
+                      children: (
+                        <>
+                          <Button
+                            size="small"
+                            type="primary"
+                            icon={<PlusOutlined />}
+                            style={{ marginBottom: 12 }}
+                            onClick={openNoteCreateModal}
+                          >
+                            Add Note
+                          </Button>
+                          {notesLoading ? (
+                            'Loading…'
+                          ) : notes.length === 0 ? (
+                            <Typography.Paragraph type="secondary">No notes yet for this project.</Typography.Paragraph>
+                          ) : (
+                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                              {notes.map((note) => {
+                                const canEdit = note.authorId === currentEmployee?.id || currentEmployee?.role === Role.ADMIN;
+                                return (
+                                  <Card key={note.id} size="small">
+                                    <Space direction="vertical" style={{ width: '100%' }} size="small">
+                                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                                        <Typography.Text type="secondary">
+                                          {note.author.fullName} — {new Date(note.createdAt).toLocaleString()}
+                                          {note.updatedAt !== note.createdAt ? ' (edited)' : ''}
+                                        </Typography.Text>
+                                        {canEdit && (
+                                          <Space>
+                                            <Button
+                                              size="small"
+                                              icon={<EditOutlined />}
+                                              onClick={() => openNoteEditModal(note)}
+                                            />
+                                            <Popconfirm
+                                              title="Delete this note?"
+                                              description="This cannot be undone."
+                                              onConfirm={() => handleNoteDelete(note)}
+                                            >
+                                              <Button
+                                                size="small"
+                                                danger
+                                                icon={<DeleteOutlined />}
+                                                loading={deletingNoteId === note.id}
+                                              />
+                                            </Popconfirm>
+                                          </Space>
+                                        )}
+                                      </Space>
+                                      <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}>
+                                        {note.content}
+                                      </Typography.Paragraph>
+                                    </Space>
+                                  </Card>
+                                );
+                              })}
+                            </Space>
+                          )}
                         </>
                       ),
                     },
@@ -1122,6 +1276,23 @@ export function ProjectsPage() {
               <DatePicker />
             </Form.Item>
           </Space>
+          <Form.Item name="notes" label="Notes (optional)">
+            <Input.TextArea rows={3} placeholder="Planning or retrospective notes for this sprint" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={editingNote ? 'Edit note' : 'Add note'}
+        open={noteModalOpen}
+        onOk={handleNoteSubmit}
+        onCancel={() => setNoteModalOpen(false)}
+        confirmLoading={savingNote}
+      >
+        <Form form={noteForm} layout="vertical">
+          <Form.Item name="content" label="Note" rules={[{ required: true, message: 'Required' }]}>
+            <Input.TextArea rows={5} placeholder="Status update, decision, risk, etc." />
+          </Form.Item>
         </Form>
       </Modal>
     </Card>

@@ -14,6 +14,7 @@ import { EmployeeLevelHistory } from './employee-level-history.entity';
 import { ContributionRecord } from '../../contribution/entities/contribution-record.entity';
 import { EmployeeCertificate } from '../../certificates/entities/employee-certificate.entity';
 import { ProjectContribution } from '../../projects/entities/project-contribution.entity';
+import { ProjectNote } from '../../projects/entities/project-note.entity';
 
 @Entity('employees')
 export class Employee {
@@ -104,6 +105,9 @@ export class Employee {
 
   @OneToMany(() => ProjectContribution, (contribution) => contribution.employee)
   projectContributions: ProjectContribution[];
+
+  @OneToMany(() => ProjectNote, (note) => note.author)
+  projectNotes: ProjectNote[];
 
   @CreateDateColumn()
   createdAt: Date;

@@ -5,6 +5,7 @@ export interface ProjectSprint {
   name: string | null;
   startDate: string;
   endDate: string;
+  notes: string | null;
   createdAt: string;
   updatedAt: string;
 }
