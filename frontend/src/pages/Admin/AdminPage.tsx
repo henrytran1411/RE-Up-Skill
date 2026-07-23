@@ -15,6 +15,7 @@ import {
   Modal,
   DatePicker,
   message,
+  Progress,
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -40,7 +41,7 @@ import { EmployeeLevel } from '../../types/employeeLevel';
 import { EmployeeRole } from '../../types/employeeRole';
 import { ProjectSummary } from '../../types/project';
 import { TaskWithEmployee } from '../../types/evaluation';
-import { buildTaskHierarchy, TaskTreeRow } from '../../utils/taskHierarchy';
+import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
 
 const DEFAULT_TEMP_PASSWORD = 'Password123!';
@@ -526,10 +527,24 @@ export function AdminPage() {
                 title: 'Points',
                 render: (_, record: TaskTreeRow) => (record.children ? record.rollupPoints : record.points),
               },
-              { title: 'Estimate hrs', dataIndex: 'estimateHours' },
+              {
+                title: 'Estimate hrs',
+                render: (_, record: TaskTreeRow) =>
+                  record.children ? record.rollupEstimateHours : record.estimateHours,
+              },
               {
                 title: 'Actual hrs',
-                render: (_, record: TaskTreeRow) => record.actualHours ?? '—',
+                render: (_, record: TaskTreeRow) =>
+                  (record.children ? record.rollupActualHours : record.actualHours) ?? '—',
+              },
+              {
+                title: 'Progress',
+                render: (_, record: TaskTreeRow) =>
+                  record.children ? (
+                    <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
+                  ) : (
+                    '—'
+                  ),
               },
               {
                 title: 'Completed',

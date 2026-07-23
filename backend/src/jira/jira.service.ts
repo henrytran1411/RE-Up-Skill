@@ -430,21 +430,24 @@ export class JiraService {
     hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
   ) {
     const issueType = issue.fields.issuetype?.name ?? null;
+    // Per this team's convention, only Task-type issues carry their own points/estimate — Epic and Story roll theirs
+    // up from their children instead, and Bug/Sub-task track only actual hours spent.
+    const isTask = issueType === 'Task';
 
-    // Per this team's convention, only Task-type issues carry story points — Epics and Stories are pure groupings with no point value of their own.
     const storyPoints = issue.fields[storyPointsField];
-    const points =
-      issueType === 'Task' && typeof storyPoints === 'number' && storyPoints > 0
-        ? Math.round(storyPoints)
-        : issueType === 'Task'
-          ? DEFAULT_POINTS
-          : 0;
+    let points = 0;
+    if (isTask) {
+      points = typeof storyPoints === 'number' && storyPoints > 0 ? Math.round(storyPoints) : DEFAULT_POINTS;
+    }
 
     const priorityName = issue.fields.priority?.name;
     const complexity = (priorityName && PRIORITY_TO_COMPLEXITY[priorityName]) || DEFAULT_COMPLEXITY;
 
     const originalEstimateSeconds = issue.fields.timetracking?.originalEstimateSeconds;
-    const estimateHours = originalEstimateSeconds ? Math.round((originalEstimateSeconds / 3600) * 100) / 100 : DEFAULT_ESTIMATE_HOURS;
+    let estimateHours = 0;
+    if (isTask) {
+      estimateHours = originalEstimateSeconds ? Math.round((originalEstimateSeconds / 3600) * 100) / 100 : DEFAULT_ESTIMATE_HOURS;
+    }
 
     const timeSpentSeconds = issue.fields.timetracking?.timeSpentSeconds;
     const actualHours = timeSpentSeconds ? Math.round((timeSpentSeconds / 3600) * 100) / 100 : null;

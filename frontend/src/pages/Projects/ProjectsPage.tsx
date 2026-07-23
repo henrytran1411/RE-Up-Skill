@@ -20,6 +20,7 @@ import {
   message,
   Tabs,
   Tooltip,
+  Progress,
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -60,7 +61,6 @@ import {
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
 import { ProjectContributionChart } from '../../components/ProjectContributionChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
-import { BlockedByTags } from '../../components/BlockedByTags';
 import { ProjectHealthPanel } from '../../components/ProjectHealthPanel';
 import {
   ProjectSummary,
@@ -74,7 +74,7 @@ import { ProjectHealthReport, EpicHealth } from '../../types/projectHealth';
 import { ProjectSprint } from '../../types/projectSprint';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
-import { buildTaskHierarchy, TaskTreeRow } from '../../utils/taskHierarchy';
+import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { useAuth } from '../../context/AuthContext';
 import { Role, ProjectStatus } from '../../types/common';
 
@@ -283,8 +283,6 @@ export function ProjectsPage() {
       complexity: task.complexity,
       points: task.points,
       actualHours: task.actualHours ?? undefined,
-      bugCount: task.bugCount,
-      pmRating: task.pmRating ?? undefined,
       completedAt: task.completedAt ? dayjs(task.completedAt) : undefined,
     });
     setTaskModalOpen(true);
@@ -749,27 +747,29 @@ export function ProjectsPage() {
                                   />
                                 ),
                               },
-                              { title: 'Estimate hrs', dataIndex: 'estimateHours' },
+                              {
+                                title: 'Estimate hrs',
+                                render: (_, record: TaskTreeRow) =>
+                                  record.children ? record.rollupEstimateHours : record.estimateHours,
+                              },
                               {
                                 title: 'Actual hrs',
-                                render: (_, record: TaskWithEmployee) => record.actualHours ?? '—',
+                                render: (_, record: TaskTreeRow) =>
+                                  (record.children ? record.rollupActualHours : record.actualHours) ?? '—',
                               },
                               {
                                 title: 'Points',
                                 render: (_, record: TaskTreeRow) =>
                                   record.children ? record.rollupPoints : record.points,
                               },
-                              { title: 'Complexity', dataIndex: 'complexity' },
-                              { title: 'Bugs', dataIndex: 'bugCount' },
                               {
-                                title: 'Blocked By',
-                                render: (_, record: TaskWithEmployee) => (
-                                  <BlockedByTags blockedByIssues={record.blockedByIssues} />
-                                ),
-                              },
-                              {
-                                title: 'PM Rating',
-                                render: (_, record: TaskWithEmployee) => record.pmRating ?? '—',
+                                title: 'Progress',
+                                render: (_, record: TaskTreeRow) =>
+                                  record.children ? (
+                                    <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
+                                  ) : (
+                                    '—'
+                                  ),
                               },
                               {
                                 title: 'Completed',
@@ -1091,17 +1091,9 @@ export function ProjectsPage() {
               <InputNumber min={1} />
             </Form.Item>
           </Space>
-          <Space style={{ width: '100%' }}>
-            <Form.Item name="actualHours" label="Actual hours">
-              <InputNumber min={0} />
-            </Form.Item>
-            <Form.Item name="bugCount" label="Bug count">
-              <InputNumber min={0} />
-            </Form.Item>
-            <Form.Item name="pmRating" label="PM rating (1-5)">
-              <InputNumber min={1} max={5} />
-            </Form.Item>
-          </Space>
+          <Form.Item name="actualHours" label="Actual hours">
+            <InputNumber min={0} />
+          </Form.Item>
           <Form.Item name="completedAt" label="Completed date">
             <DatePicker style={{ width: '100%' }} />
           </Form.Item>
