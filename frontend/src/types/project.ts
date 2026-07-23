@@ -31,7 +31,7 @@ export interface PublicProjectContributor {
 
 export interface ProjectContributor extends PublicProjectContributor {
   /** ROI inputs/outputs — null when the employee has no salary on file. */
-  monthlySalary: number | null;
+  totalSalary: number | null;
   hoursSpent: number;
   cost: number | null;
   revenueShare: number;

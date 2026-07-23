@@ -1,10 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put } from '@nestjs/common';
 import { ProjectsService } from './projects.service';
 import { ProjectSprintsService } from './project-sprints.service';
+import { ProjectContributionsService } from './project-contributions.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpsertProjectDto } from './dto/upsert-project.dto';
 import { CreateProjectSprintDto } from './dto/create-project-sprint.dto';
 import { UpdateProjectSprintDto } from './dto/update-project-sprint.dto';
+import { SetProjectContributionDto } from './dto/set-project-contribution.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -14,6 +16,7 @@ export class ProjectsController {
   constructor(
     private readonly projectsService: ProjectsService,
     private readonly projectSprintsService: ProjectSprintsService,
+    private readonly projectContributionsService: ProjectContributionsService,
   ) {}
 
   /** Stand up a new project record — HR/Admin only. Doesn't require any tasks to exist yet. */
@@ -78,5 +81,24 @@ export class ProjectsController {
   @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   deleteSprint(@Param('name') name: string, @Param('id') id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.projectSprintsService.remove(name, id, user);
+  }
+
+  /** Sensitive compensation data — HR/Admin only, used to prefill the ROI screen's inline rate editor. */
+  @Get(':name/contributions/:employeeId')
+  @Roles(Role.HR, Role.ADMIN)
+  async getContributionRate(@Param('name') name: string, @Param('employeeId') employeeId: string) {
+    return { totalSalary: await this.projectContributionsService.findRate(employeeId, name) };
+  }
+
+  /** The only way a contribution rate is ever set — entered manually from the ROI screen, not the employee edit form. */
+  @Put(':name/contributions/:employeeId')
+  @Roles(Role.HR, Role.ADMIN)
+  async setContributionRate(
+    @Param('name') name: string,
+    @Param('employeeId') employeeId: string,
+    @Body() dto: SetProjectContributionDto,
+  ) {
+    await this.projectContributionsService.setRate(employeeId, name, dto.totalSalary);
+    return { totalSalary: dto.totalSalary };
   }
 }

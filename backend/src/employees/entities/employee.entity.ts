@@ -13,7 +13,7 @@ import { Evaluation } from '../../evaluations/entities/evaluation.entity';
 import { EmployeeLevelHistory } from './employee-level-history.entity';
 import { ContributionRecord } from '../../contribution/entities/contribution-record.entity';
 import { EmployeeCertificate } from '../../certificates/entities/employee-certificate.entity';
-import { DecimalColumnTransformer } from '../../common/transformers/decimal.transformer';
+import { ProjectContribution } from '../../projects/entities/project-contribution.entity';
 
 @Entity('employees')
 export class Employee {
@@ -81,15 +81,6 @@ export class Employee {
   @Column({ type: 'varchar', length: 100, nullable: true, unique: true })
   jiraAccountId: string | null;
 
-  /**
-   * Monthly salary, used to derive an hourly cost rate for ROI calculations.
-   * Sensitive compensation data — excluded from normal queries (like
-   * passwordHash) and only ever fetched via explicit addSelect for HR/Admin
-   * or internal ROI math, never returned from the general employee list.
-   */
-  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true, select: false, transformer: DecimalColumnTransformer })
-  monthlySalary: number | null;
-
   @OneToMany(() => EmployeeSkill, (employeeSkill) => employeeSkill.employee)
   skills: EmployeeSkill[];
 
@@ -110,6 +101,9 @@ export class Employee {
 
   @OneToMany(() => EmployeeCertificate, (certificate) => certificate.employee)
   certificates: EmployeeCertificate[];
+
+  @OneToMany(() => ProjectContribution, (contribution) => contribution.employee)
+  projectContributions: ProjectContribution[];
 
   @CreateDateColumn()
   createdAt: Date;

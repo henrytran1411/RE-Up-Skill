@@ -39,6 +39,7 @@ import {
   upsertProject,
   createProject,
   deleteProject,
+  setProjectContributionRate,
 } from '../../services/projectService';
 import {
   fetchTasksForProject,
@@ -47,7 +48,7 @@ import {
   deleteTask,
   setEpicDependencies,
 } from '../../services/taskService';
-import { fetchAllEmployees, setEmployeeSalary } from '../../services/employeeService';
+import { fetchAllEmployees } from '../../services/employeeService';
 import { fetchProjectHealth } from '../../services/projectHealthService';
 import {
   fetchSprintsForProject,
@@ -57,6 +58,7 @@ import {
   generateSprints,
 } from '../../services/projectSprintService';
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
+import { ProjectContributionChart } from '../../components/ProjectContributionChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
 import { BlockedByTags } from '../../components/BlockedByTags';
 import { ProjectHealthPanel } from '../../components/ProjectHealthPanel';
@@ -427,7 +429,7 @@ export function ProjectsPage() {
 
   const startEditSalary = (contributor: ProjectContributor) => {
     setEditingSalaryId(contributor.employeeId);
-    setSalaryDraft(contributor.monthlySalary);
+    setSalaryDraft(contributor.totalSalary);
   };
 
   const cancelEditSalary = () => {
@@ -439,7 +441,7 @@ export function ProjectsPage() {
     if (salaryDraft === null || !detail) return;
     setSavingSalary(true);
     try {
-      await setEmployeeSalary(employeeId, salaryDraft);
+      await setProjectContributionRate(detail.projectName, employeeId, salaryDraft);
       message.success('Salary updated');
       setEditingSalaryId(null);
       await refreshDetail(detail.projectName);
@@ -927,8 +929,8 @@ export function ProjectsPage() {
               ...(roiOverview
                 ? [
                     {
-                      key: 'roi',
-                      label: 'Return on Investment',
+                      key: 'contribution',
+                      label: 'Project Contribution',
                       children: (
                         <>
                           {roiOverview.contributorsMissingSalaryCount > 0 && (
@@ -936,7 +938,7 @@ export function ProjectsPage() {
                               type="warning"
                               showIcon
                               style={{ marginBottom: 16 }}
-                              message={`${roiOverview.contributorsMissingSalaryCount} of ${roiOverview.contributorCount} contributors have no salary on file — their cost is excluded, so Total Cost / Net Profit below understate reality.`}
+                              message={`${roiOverview.contributorsMissingSalaryCount} of ${roiOverview.contributorCount} contributors have no rate on file for this project — their contribution value is excluded below until one is set.`}
                             />
                           )}
 
@@ -949,7 +951,7 @@ export function ProjectsPage() {
                             </Col>
                             <Col span={6}>
                               <Statistic
-                                title="Net Profit"
+                                title="Total Contribution Value"
                                 value={formatMoney(roiOverview.netProfit)}
                                 valueStyle={{ color: roiOverview.netProfit >= 0 ? '#3f8600' : '#cf1322' }}
                               />
@@ -963,6 +965,12 @@ export function ProjectsPage() {
                             </Col>
                           </Row>
 
+                          <Typography.Title level={5}>Contribution Value by Employee</Typography.Title>
+                          <ProjectContributionChart contributors={roiOverview.contributors} />
+
+                          <Typography.Title level={5} style={{ marginTop: 24 }}>
+                            Contribution Detail
+                          </Typography.Title>
                           <Table
                             rowKey="employeeId"
                             size="small"
@@ -971,7 +979,7 @@ export function ProjectsPage() {
                             columns={[
                               { title: 'Employee', dataIndex: 'employeeName' },
                               {
-                                title: 'Monthly Salary',
+                                title: 'Total Salary',
                                 render: (_, record: ProjectContributor) => {
                                   if (editingSalaryId === record.employeeId) {
                                     return (
@@ -997,7 +1005,7 @@ export function ProjectsPage() {
                                   }
                                   return (
                                     <Space>
-                                      {formatMoney(record.monthlySalary)}
+                                      {formatMoney(record.totalSalary)}
                                       {canManage && (
                                         <Button
                                           size="small"

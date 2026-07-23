@@ -56,17 +56,6 @@ export interface CreateEmployeePayload {
   jiraAccountId?: string;
 }
 
-/** Sensitive — HR/Admin only. Used to prefill the ROI screen's inline salary editor. */
-export async function fetchEmployeeSalary(id: string): Promise<number | null> {
-  const { data } = await apiClient.get<{ monthlySalary: number | null }>(`/employees/${id}/salary`);
-  return data.monthlySalary;
-}
-
-/** The only way salary is ever set — entered manually from the ROI screen, not the employee edit form. */
-export async function setEmployeeSalary(id: string, monthlySalary: number): Promise<void> {
-  await apiClient.put(`/employees/${id}/salary`, { monthlySalary });
-}
-
 export async function createEmployee(payload: CreateEmployeePayload): Promise<Employee> {
   const { data } = await apiClient.post<Employee>('/employees', payload);
   return data;

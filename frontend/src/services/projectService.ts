@@ -43,3 +43,20 @@ export async function upsertProject(projectName: string, payload: UpsertProjectP
 export async function deleteProject(projectName: string): Promise<void> {
   await apiClient.delete(`/projects/${encodeURIComponent(projectName)}`);
 }
+
+/** Sensitive — HR/Admin only. Used to prefill the ROI screen's inline rate editor. */
+export async function fetchProjectContributionRate(projectName: string, employeeId: string): Promise<number | null> {
+  const { data } = await apiClient.get<{ totalSalary: number | null }>(
+    `/projects/${encodeURIComponent(projectName)}/contributions/${employeeId}`,
+  );
+  return data.totalSalary;
+}
+
+/** The only way a contribution rate is ever set — entered manually from the ROI screen, not the employee edit form. */
+export async function setProjectContributionRate(
+  projectName: string,
+  employeeId: string,
+  totalSalary: number,
+): Promise<void> {
+  await apiClient.put(`/projects/${encodeURIComponent(projectName)}/contributions/${employeeId}`, { totalSalary });
+}

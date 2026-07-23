@@ -163,7 +163,7 @@ export class EmployeesService {
    * MANUAL level-history entry (effective today, since there's no "effective
    * date" field on this form — HR is changing it right now).
    *
-   * Uses a direct partial UPDATE rather than load-mutate-save: `monthlySalary`
+   * Uses a direct partial UPDATE rather than load-mutate-save: `passwordHash`
    * is `select: false`, so a loaded `Employee` instance never carries it —
    * saving that instance back would silently null the column out. A partial
    * update only touches the columns actually present in `dto`.
@@ -253,17 +253,6 @@ export class EmployeesService {
     await this.levelHistoryRepository.save(entry);
   }
 
-  /**
-   * The only way an employee's salary is ever set — invoked from the ROI
-   * screen when HR/Admin manually enters it, not from the general employee
-   * edit form. A direct partial update, since `monthlySalary` is
-   * `select: false` and would be silently nulled by a load-mutate-save.
-   */
-  async setSalary(id: string, monthlySalary: number): Promise<void> {
-    await this.findOne(id);
-    await this.employeeRepository.update(id, { monthlySalary });
-  }
-
   /** Plain names for display (e.g. "managed by X") — not sensitive, no addSelect needed. */
   async findNamesByIds(ids: string[]): Promise<Map<string, string>> {
     if (ids.length === 0) {
@@ -274,33 +263,6 @@ export class EmployeesService {
       select: { id: true, fullName: true },
     });
     return new Map(rows.map((r) => [r.id, r.fullName]));
-  }
-
-  /** Sensitive: only for HR/Admin viewing the edit form, or internal ROI math. */
-  async findSalary(id: string): Promise<number | null> {
-    const employee = await this.employeeRepository
-      .createQueryBuilder('employee')
-      .addSelect('employee.monthlySalary')
-      .where('employee.id = :id', { id })
-      .getOne();
-    if (!employee) {
-      throw new NotFoundException(`Employee ${id} not found`);
-    }
-    return employee.monthlySalary;
-  }
-
-  /** Batch salary lookup for ROI calculations — avoids one query per contributor. */
-  async findSalariesByIds(ids: string[]): Promise<Map<string, number | null>> {
-    if (ids.length === 0) {
-      return new Map();
-    }
-    const rows = await this.employeeRepository
-      .createQueryBuilder('employee')
-      .select('employee.id', 'id')
-      .addSelect('employee.monthlySalary', 'monthlySalary')
-      .where('employee.id IN (:...ids)', { ids })
-      .getRawMany<{ id: string; monthlySalary: string | null }>();
-    return new Map(rows.map((r) => [r.id, r.monthlySalary === null ? null : Number(r.monthlySalary)]));
   }
 
   async remove(id: string): Promise<void> {

@@ -8,6 +8,7 @@ import { UpdateTaskRecordDto } from './dto/update-task-record.dto';
 import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ProjectSprintsService } from '../projects/project-sprints.service';
+import { ProjectContributionsService } from '../projects/project-contributions.service';
 import { Role } from '../common/enums/role.enum';
 import { ProjectStatus } from '../common/enums/project-status.enum';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
@@ -98,7 +99,7 @@ export interface PublicProjectContributor {
 
 export interface ProjectContributor extends PublicProjectContributor {
   /** ROI inputs/outputs — null when the employee has no salary on file. */
-  monthlySalary: number | null;
+  totalSalary: number | null;
   hoursSpent: number;
   cost: number | null;
   revenueShare: number;
@@ -150,6 +151,7 @@ export class TasksService {
     private readonly employeesService: EmployeesService,
     private readonly projectsService: ProjectsService,
     private readonly projectSprintsService: ProjectSprintsService,
+    private readonly projectContributionsService: ProjectContributionsService,
     private readonly projectHealthService: ProjectHealthService,
   ) {}
 
@@ -466,7 +468,7 @@ export class TasksService {
    * employee, each contributor's effort share computed three ways (by
    * points, by estimated hours, by actual hours logged so far), and — for
    * roles allowed to see it — the ROI math: revenueShare = project revenue *
-   * pointsEffortPercent; cost = (monthlySalary / 160 standard hours) * hours
+   * pointsEffortPercent; cost = (totalSalary / 160 standard hours) * hours
    * actually spent (falling back to estimate for still-in-progress tasks);
    * netContribution = revenueShare - cost.
    *
@@ -509,7 +511,7 @@ export class TasksService {
 
     const [salariesByEmployeeId, managerNames] = await Promise.all([
       canViewRoi
-        ? this.employeesService.findSalariesByIds(Array.from(tasksByEmployee.keys()))
+        ? this.projectContributionsService.findRatesByEmployeeIds(Array.from(tasksByEmployee.keys()), projectName)
         : Promise.resolve(new Map<string, number | null>()),
       project?.managerId
         ? this.employeesService.findNamesByIds([project.managerId])
@@ -524,15 +526,15 @@ export class TasksService {
         const actualHours = empTasks.reduce((sum, t) => sum + (t.actualHours ?? 0), 0);
         const pointsEffortPercent = percentOf(points, totalPoints);
 
-        const monthlySalary = salariesByEmployeeId.get(employeeId) ?? null;
+        const totalSalary = salariesByEmployeeId.get(employeeId) ?? null;
         const hoursSpent = actualHours > 0 ? actualHours : estimateHours;
         const revenueShare = round2(revenue * (pointsEffortPercent / 100));
 
         let cost: number | null = null;
         let netContribution: number | null = null;
         let roiPercent: number | null = null;
-        if (monthlySalary !== null) {
-          cost = round2((monthlySalary / STANDARD_MONTHLY_HOURS) * hoursSpent);
+        if (totalSalary !== null) {
+          cost = round2((totalSalary / STANDARD_MONTHLY_HOURS) * hoursSpent);
           netContribution = round2(revenueShare - cost);
           roiPercent = cost > 0 ? percentOf(netContribution, cost) : null;
         }
@@ -547,7 +549,7 @@ export class TasksService {
           pointsEffortPercent,
           estimateEffortPercent: percentOf(estimateHours, totalEstimateHours),
           actualEffortPercent: percentOf(actualHours, totalActualHours),
-          monthlySalary,
+          totalSalary,
           hoursSpent,
           cost,
           revenueShare,
@@ -591,7 +593,7 @@ export class TasksService {
       totalCost,
       netProfit,
       roiPercent: totalCost > 0 ? percentOf(netProfit, totalCost) : null,
-      contributorsMissingSalaryCount: contributors.filter((c) => c.monthlySalary === null).length,
+      contributorsMissingSalaryCount: contributors.filter((c) => c.totalSalary === null).length,
       contributors,
     };
   }

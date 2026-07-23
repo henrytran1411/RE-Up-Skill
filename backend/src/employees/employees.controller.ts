@@ -6,13 +6,11 @@ import {
   Param,
   Patch,
   Post,
-  Put,
   Query,
 } from '@nestjs/common';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
-import { SetSalaryDto } from './dto/set-salary.dto';
 import { BackfillLevelHistoryDto } from './dto/backfill-level-history.dto';
 import { FindEmployeesQueryDto } from './dto/find-employees-query.dto';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -71,21 +69,6 @@ export class EmployeesController {
   @Roles(Role.HR, Role.ADMIN)
   backfillLevelHistory(@Param('id') id: string, @Body() dto: BackfillLevelHistoryDto) {
     return this.employeesService.backfillLevelHistory(id, dto.level, dto.startDate);
-  }
-
-  /** Sensitive compensation data — HR/Admin only, used to prefill the ROI screen's inline salary editor. */
-  @Get(':id/salary')
-  @Roles(Role.HR, Role.ADMIN)
-  async findSalary(@Param('id') id: string) {
-    return { monthlySalary: await this.employeesService.findSalary(id) };
-  }
-
-  /** The only way salary is ever set — entered manually from the ROI screen, not the employee edit form. */
-  @Put(':id/salary')
-  @Roles(Role.HR, Role.ADMIN)
-  async setSalary(@Param('id') id: string, @Body() dto: SetSalaryDto) {
-    await this.employeesService.setSalary(id, dto.monthlySalary);
-    return { monthlySalary: dto.monthlySalary };
   }
 
   @Patch(':id')
