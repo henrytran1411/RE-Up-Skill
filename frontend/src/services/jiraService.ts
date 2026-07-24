@@ -43,8 +43,10 @@ export interface JiraSyncSummary {
   sprintsCreated?: number;
   /** Set only by runJiraSingleProjectSync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
   tasksAssignedToSprint?: number;
-  /** Set only by runJiraSingleProjectSync — issues with no assignee in Jira at all, synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped. Reassign these to the real owner once known. */
+  /** Set only by runJiraSingleProjectSync — issues synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped: no assignee in Jira at all, an assignee not yet mapped to an Employee, or an inactive/deactivated Jira account. Reassign these to the real owner once known — see unmatchedAssignees for who. */
   tasksWithoutAssignee?: number;
+  /** Set only by runJiraSingleProjectSync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). */
+  blockedByTaskIdsResolved?: number;
 }
 
 export async function runJiraSync(): Promise<JiraSyncSummary> {

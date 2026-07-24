@@ -11,6 +11,7 @@ import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ProjectSprintsService } from '../projects/project-sprints.service';
 import { TaskCodeService } from '../tasks/task-code.service';
+import { TasksService } from '../tasks/tasks.service';
 
 /**
  * The subset of a Jira REST API v3 `/search/jql` result we actually read.
@@ -148,8 +149,10 @@ export interface JiraSyncSummary {
   sprintsCreated?: number;
   /** Set only by a single-project sync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
   tasksAssignedToSprint?: number;
-  /** Set only by a single-project sync — issues with no assignee in Jira at all, synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped. Reassign these to the real owner once known. */
+  /** Set only by a single-project sync — issues synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped: no assignee in Jira at all, an assignee not yet mapped to an Employee, or an inactive/deactivated Jira account. Reassign these to the real owner once known — see unmatchedAssignees for who. */
   tasksWithoutAssignee?: number;
+  /** Set only by a single-project sync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). See TasksService.resolveBlockedByTaskIdsForProject. */
+  blockedByTaskIdsResolved?: number;
 }
 
 export interface JiraProjectSyncSummary {
@@ -234,6 +237,7 @@ export class JiraService {
     private readonly projectsService: ProjectsService,
     private readonly projectSprintsService: ProjectSprintsService,
     private readonly taskCodeService: TaskCodeService,
+    private readonly tasksService: TasksService,
   ) {}
 
   /** The stored config, if any, WITHOUT the token — for display in the Admin UI (see getConfigSummary for the masked public shape). */
@@ -735,18 +739,21 @@ export class JiraService {
    * Upserts one issue into task_records, matched by jiraIssueKey —
    * re-running a sync updates existing rows instead of duplicating.
    *
-   * An issue with an assignee Jira account that has no mapped Employee is
-   * still skipped (recorded in `unmatched`) — that's a real person who
-   * needs mapping, not guessed. An issue with NO assignee at all is only
+   * An issue whose assignee (or lack of one) doesn't resolve to a mapped
+   * Employee — an unmatched real person, an inactive/deactivated Jira
+   * account we deliberately refuse to auto-create (see
+   * autoCreateEmployeesForUnmatched), or no assignee at all — is only
    * skipped when `unassignedPlaceholderEmployeeId` is null (the bulk
-   * sync's behavior); syncSingleProjectFromJira passes a real id instead,
+   * sync's behavior). syncSingleProjectFromJira passes a real id instead,
    * so the task still syncs under the shared placeholder employee — see
-   * resolveUnassignedPlaceholderEmployeeId — to be manually reassigned
-   * later rather than lost. Note the unmatched-assignee case applies to
-   * Epics and Stories too: one with no assignee in Jira won't sync, so the
-   * Task Management hierarchy will have no parent row for its children to
-   * nest under — assign Epics/Stories in Jira if you want them to anchor
-   * the grouping.
+   * resolveUnassignedPlaceholderEmployeeId — rather than losing its data
+   * (points, hours, blockedByIssues, etc.) to a skip. The assignee is
+   * still recorded in `unmatched` either way, so it's visible for manual
+   * reassignment later — getting the task data (and its dependency links)
+   * into the system doesn't require sorting out ownership first. Note this
+   * applies to Epics and Stories too: one with an unresolved assignee
+   * still syncs under the placeholder, so the Task Management hierarchy
+   * still gets a parent row for its children to nest under.
    *
    * When `sprintFieldId` is given and the issue carries a Jira sprint (see
    * pickCurrentSprint), finds or creates the matching ProjectSprint via
@@ -775,11 +782,18 @@ export class JiraService {
     let usedPlaceholder = false;
     if (mapped.assigneeAccountId) {
       const employee = await this.employeesService.findByJiraAccountId(mapped.assigneeAccountId);
-      if (!employee) {
+      if (employee) {
+        employeeId = employee.id;
+      } else {
+        // Unmatched real person — still record it for visibility/reassignment, but don't let that
+        // block the task's own data (and its blockedByIssues) from making it into the system.
         this.recordUnmatched(unmatched, mapped.assigneeAccountId, mapped.assigneeDisplayName);
-        return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
+        if (!unassignedPlaceholderEmployeeId) {
+          return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
+        }
+        employeeId = unassignedPlaceholderEmployeeId;
+        usedPlaceholder = true;
       }
-      employeeId = employee.id;
     } else if (unassignedPlaceholderEmployeeId) {
       employeeId = unassignedPlaceholderEmployeeId;
       usedPlaceholder = true;
@@ -1038,8 +1052,11 @@ export class JiraService {
    * After that, recomputes every synced issue's `taskCode`
    * (Epic-1/US-1.1/Task-1.1.1/Bug-1.1.1.1/SubTask-1.1.1.1) via
    * TaskCodeService — see assignTaskCodesForProject for the numbering
-   * rules. The project name used for that pass is read off the synced
-   * issues themselves (Jira's own project.name), not the key.
+   * rules — then resolves each task's Jira-sourced blockedByIssues into
+   * blockedByTaskIds (a task can be blocked by more than one other task)
+   * via TasksService.resolveBlockedByTaskIdsForProject. The project name
+   * used for both passes is read off the synced issues themselves (Jira's
+   * own project.name), not the key.
    */
   async syncSingleProjectFromJira(projectKey: string): Promise<JiraSyncSummary> {
     const startedAt = new Date();
@@ -1094,10 +1111,11 @@ export class JiraService {
     const projectName = issues[0].fields.project?.name;
     if (projectName && (summary.tasksCreated > 0 || summary.tasksUpdated > 0)) {
       summary.taskCodesAssigned = await this.taskCodeService.assignTaskCodesForProject(projectName);
+      summary.blockedByTaskIdsResolved = await this.tasksService.resolveBlockedByTaskIdsForProject(projectName);
     }
 
     this.logger.log(
-      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} unassigned, synced anyway), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} with no owner mapped, synced anyway under the placeholder), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned, ${summary.blockedByTaskIdsResolved ?? 0} task(s) got blockedByTaskIds resolved`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

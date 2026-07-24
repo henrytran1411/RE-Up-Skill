@@ -285,6 +285,49 @@ export class TasksService {
   }
 
   /**
+   * Resolves each task's Jira-sourced blockedByIssues (raw issue-key refs,
+   * already captured for every issue type during sync) into blockedByTaskIds
+   * — this project's own TaskRecord ids — wherever the blocking issue is
+   * itself a synced task in the same project. A task can be blocked by more
+   * than one other task, so every matching ref is kept, not just the first.
+   * Only fills in tasks that don't already carry a blockedByTaskIds value,
+   * so a PM's manual edits (or a previous run of this same pass) survive a
+   * re-sync rather than being overwritten. Called once per Jira sync — see
+   * JiraService.syncSingleProjectFromJira — after every issue in the batch
+   * has been persisted, since a blocker can be any issue in the project, not
+   * just one already seen earlier in this same run. Returns how many rows
+   * got a new blockedByTaskIds value. Epic/Story issues are skipped — their
+   * blockedByIssues may hold Epic-level dependencies set via
+   * setEpicDependencies, which drive the separate Epic-level critical path
+   * (getProjectHealth) and shouldn't leak into this task-level one.
+   */
+  async resolveBlockedByTaskIdsForProject(projectName: string): Promise<number> {
+    const tasks = await this.taskRepository.find({ where: { projectName } });
+    const idByJiraKey = new Map(
+      tasks.filter((t) => t.jiraIssueKey !== null).map((t) => [t.jiraIssueKey as string, t.id]),
+    );
+
+    let resolvedCount = 0;
+    for (const task of tasks) {
+      if (task.issueType === 'Epic' || task.issueType === 'Story' || task.blockedByTaskIds.length > 0) {
+        continue;
+      }
+      const blockerIds = [
+        ...new Set(
+          task.blockedByIssues
+            .map((ref) => idByJiraKey.get(ref.key))
+            .filter((blockerId): blockerId is string => blockerId !== undefined && blockerId !== task.id),
+        ),
+      ];
+      if (blockerIds.length > 0) {
+        await this.taskRepository.update(task.id, { blockedByTaskIds: blockerIds });
+        resolvedCount++;
+      }
+    }
+    return resolvedCount;
+  }
+
+  /**
    * Sets which other Epics (by their own jiraIssueKey) must finish before
    * this one can — the input the health check's longest-chain critical-path
    * calculation runs on. Any existing blockedByIssues entries that don't

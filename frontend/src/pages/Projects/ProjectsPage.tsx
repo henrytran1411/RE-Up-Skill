@@ -169,6 +169,7 @@ export function ProjectsPage() {
   const [savingTask, setSavingTask] = useState(false);
   const [taskForm] = Form.useForm();
   const [searchText, setSearchText] = useState('');
+  const [taskSearchText, setTaskSearchText] = useState('');
 
   const loadProjects = () => fetchAllProjects().then(setProjects);
 
@@ -590,6 +591,16 @@ export function ProjectsPage() {
       )
     : projects;
 
+  const normalizedTaskSearch = taskSearchText.trim().toLowerCase();
+  const filteredProjectTasks = normalizedTaskSearch
+    ? projectTasks.filter(
+        (task) =>
+          (task.taskCode ?? '').toLowerCase().includes(normalizedTaskSearch) ||
+          (task.jiraIssueKey ?? '').toLowerCase().includes(normalizedTaskSearch) ||
+          task.taskName.toLowerCase().includes(normalizedTaskSearch),
+      )
+    : projectTasks;
+
   return (
     <Card
       title="Projects"
@@ -695,7 +706,10 @@ export function ProjectsPage() {
           )
         }
         open={detail !== null || detailLoading}
-        onCancel={() => setDetail(null)}
+        onCancel={() => {
+          setDetail(null);
+          setTaskSearchText('');
+        }}
         footer={null}
         width="90%"
       >
@@ -838,21 +852,24 @@ export function ProjectsPage() {
                       label: 'Task Management',
                       children: (
                         <>
-                          <Button
-                            size="small"
-                            type="primary"
-                            icon={<PlusOutlined />}
-                            style={{ marginBottom: 8 }}
-                            onClick={openCreateTaskModal}
-                          >
-                            Add Task
-                          </Button>
+                          <Space style={{ marginBottom: 8 }}>
+                            <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateTaskModal}>
+                              Add Task
+                            </Button>
+                            <Input.Search
+                              placeholder="Search by task code, Jira key, or title"
+                              allowClear
+                              style={{ width: 260 }}
+                              value={taskSearchText}
+                              onChange={(e) => setTaskSearchText(e.target.value)}
+                            />
+                          </Space>
                           <Table
                             rowKey="id"
                             size="small"
                             loading={tasksLoading}
                             pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['10', '20', '50'] }}
-                            dataSource={buildTaskHierarchy(projectTasks)}
+                            dataSource={buildTaskHierarchy(filteredProjectTasks)}
                             columns={[
                               {
                                 title: 'Task',
