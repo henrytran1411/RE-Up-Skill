@@ -70,6 +70,7 @@ import { IssueTypeTag } from '../../components/IssueTypeTag';
 import { ProjectHealthPanel } from '../../components/ProjectHealthPanel';
 import { TaskCriticalPathPanel } from '../../components/TaskCriticalPathPanel';
 import { TaskDependencyTags } from '../../components/TaskDependencyTags';
+import { TaskReadinessTag } from '../../components/TaskReadinessTag';
 import {
   ProjectSummary,
   ProjectOverview,
@@ -934,6 +935,18 @@ export function ProjectsPage() {
                                     allTasks={projectTasks}
                                   />
                                 ),
+                              },
+                              {
+                                title: 'Ready',
+                                render: (_, record: TaskTreeRow) =>
+                                  record.children ? (
+                                    '—'
+                                  ) : (
+                                    <TaskReadinessTag
+                                      blockedByTaskIds={record.blockedByTaskIds ?? []}
+                                      allTasks={projectTasks}
+                                    />
+                                  ),
                               },
                               {
                                 title: 'Actions',

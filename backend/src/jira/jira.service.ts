@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
 import { TaskRecord, BlockedByIssueRef } from '../tasks/entities/task-record.entity';
+import { TaskStatus } from '../common/enums/task-status.enum';
 import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
@@ -28,7 +29,7 @@ interface JiraIssue {
     project?: { name?: string };
     assignee?: { accountId?: string; displayName?: string } | null;
     priority?: { name?: string };
-    status?: { statusCategory?: { key?: string } };
+    status?: { name?: string; statusCategory?: { key?: string } };
     timetracking?: { originalEstimateSeconds?: number; timeSpentSeconds?: number };
     issuetype?: { name?: string };
     issuelinks?: JiraIssueLink[];
@@ -168,6 +169,31 @@ const PRIORITY_TO_COMPLEXITY: Record<string, number> = {
   Lowest: 1,
 };
 const DEFAULT_COMPLEXITY = 3;
+
+/**
+ * Jira's status names are workflow-specific (a team can rename/add statuses
+ * freely) — only "To Do", "In Progress", "Done"/"Completed" map directly to
+ * our three-state TaskStatus; anything else (e.g. "In Review", "Blocked",
+ * "QA") is treated as still in flight, i.e. IN_PROGRESS, rather than left
+ * unset.
+ */
+function mapJiraStatusToTaskStatus(statusName: string | undefined | null): TaskStatus {
+  switch (statusName?.trim().toLowerCase()) {
+    case 'to do':
+      return TaskStatus.TODO;
+    case 'in progress':
+      return TaskStatus.IN_PROGRESS;
+    case 'done':
+    case 'completed':
+      return TaskStatus.COMPLETED;
+    default:
+      return TaskStatus.IN_PROGRESS;
+  }
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 /** Used when an issue has no original estimate logged in Jira — a guess, not a derived fact. */
 const DEFAULT_ESTIMATE_HOURS = 4;
@@ -543,8 +569,8 @@ export class JiraService {
     const timeSpentSeconds = issue.fields.timetracking?.timeSpentSeconds;
     const actualHours = timeSpentSeconds ? Math.round((timeSpentSeconds / 3600) * 100) / 100 : null;
 
-    const isDone = issue.fields.status?.statusCategory?.key === 'done';
-    const completedAt = isDone && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
+    const status = mapJiraStatusToTaskStatus(issue.fields.status?.name);
+    const completedAt = status === TaskStatus.COMPLETED && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
 
     const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, issue.fields.parent?.key ?? null, hierarchy);
     const jiraSprint = sprintFieldId ? this.pickCurrentSprint(issue.fields[sprintFieldId]) : null;
@@ -558,6 +584,7 @@ export class JiraService {
       actualHours,
       complexity,
       points,
+      status,
       completedAt,
       createdAt: new Date(issue.fields.created),
       issueType,
@@ -771,6 +798,14 @@ export class JiraService {
       sprintCreated = wasCreated;
     }
 
+    const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
+
+    // Jira's own resolutiondate is the preferred completedAt, but a Done-category issue with none set (an
+    // unconfigured resolution field, say) still needs a stamp to stay consistent with status — reuse whatever
+    // was already stored rather than drifting to "today" on every re-sync.
+    const completedAt =
+      mapped.status === TaskStatus.COMPLETED ? mapped.completedAt ?? existing?.completedAt ?? todayIso() : null;
+
     const taskFields = {
       employeeId,
       projectName: mapped.projectName,
@@ -779,7 +814,8 @@ export class JiraService {
       actualHours: mapped.actualHours,
       complexity: mapped.complexity,
       points: mapped.points,
-      completedAt: mapped.completedAt,
+      status: mapped.status,
+      completedAt,
       issueType: mapped.issueType,
       blockedByIssues: mapped.blockedByIssues,
       epicKey: mapped.epicKey,
@@ -787,7 +823,6 @@ export class JiraService {
       ...(projectSprintId !== undefined ? { projectSprintId } : {}),
     };
 
-    const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
     if (existing) {
       await this.taskRepository.save(Object.assign(existing, taskFields));
       return { outcome: 'updated', sprintCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
