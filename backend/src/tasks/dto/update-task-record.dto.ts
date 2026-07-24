@@ -1,4 +1,5 @@
-import { IsDateString, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { IsArray, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { TaskStatus } from '../../common/enums/task-status.enum';
 
 /** All fields optional — PM/Tech Lead/Admin can edit whichever fields need correcting. */
 export class UpdateTaskRecordDto {
@@ -57,4 +58,15 @@ export class UpdateTaskRecordDto {
   @IsUUID()
   @IsOptional()
   projectSprintId?: string;
+
+  /** Other task ids (in this same project) that must finish before this one can — drives the task-level critical path. */
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  blockedByTaskIds?: string[];
+
+  /** Workflow status. Setting COMPLETED without completedAt auto-stamps today; setting TODO/IN_PROGRESS clears completedAt. */
+  @IsEnum(TaskStatus)
+  @IsOptional()
+  status?: TaskStatus;
 }

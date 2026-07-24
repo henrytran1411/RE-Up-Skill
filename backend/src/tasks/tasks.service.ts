@@ -14,6 +14,8 @@ import { ProjectStatus } from '../common/enums/project-status.enum';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { computeTaskScore } from '../evaluations/scoring/scoring.util';
 import { ProjectHealthService, ProjectHealthReport } from './project-health.service';
+import { TaskCriticalPathService, TaskCriticalPathReport } from './task-critical-path.service';
+import { TaskStatus } from '../common/enums/task-status.enum';
 
 /** Standard working hours in a month (8h/day x 20 workdays), used to derive an hourly cost rate from monthly salary. */
 const STANDARD_MONTHLY_HOURS = 160;
@@ -129,6 +131,10 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function toPublicContributor(c: ProjectContributor): PublicProjectContributor {
   return {
     employeeId: c.employeeId,
@@ -153,6 +159,7 @@ export class TasksService {
     private readonly projectSprintsService: ProjectSprintsService,
     private readonly projectContributionsService: ProjectContributionsService,
     private readonly projectHealthService: ProjectHealthService,
+    private readonly taskCriticalPathService: TaskCriticalPathService,
   ) {}
 
   /** PM may only touch tasks on a project they're the assigned manager of; other mutating roles are unrestricted. */
@@ -166,9 +173,35 @@ export class TasksService {
     }
   }
 
+  /** Every blockedByTaskIds entry must be a real task in the same project; `excludeId` (when editing) may not appear in its own list. */
+  private async validateBlockedByTaskIds(
+    projectName: string,
+    blockedByTaskIds: string[],
+    excludeId?: string,
+  ): Promise<void> {
+    if (excludeId && blockedByTaskIds.includes(excludeId)) {
+      throw new BadRequestException('A task cannot depend on itself');
+    }
+    if (blockedByTaskIds.length === 0) {
+      return;
+    }
+    const projectTasks = await this.taskRepository.find({ where: { projectName } });
+    const validIds = new Set(projectTasks.map((t) => t.id));
+    const unknownIds = blockedByTaskIds.filter((id) => !validIds.has(id));
+    if (unknownIds.length > 0) {
+      throw new BadRequestException(`Not a task in this project: ${unknownIds.join(', ')}`);
+    }
+  }
+
   async create(dto: CreateTaskRecordDto, requester: AuthenticatedUser): Promise<TaskRecord> {
     await this.ensurePmManagesProject(requester, dto.projectName);
+    if (dto.blockedByTaskIds) {
+      await this.validateBlockedByTaskIds(dto.projectName, dto.blockedByTaskIds);
+    }
     const task = this.taskRepository.create(dto);
+    if (dto.status !== undefined) {
+      task.completedAt = dto.status === TaskStatus.COMPLETED ? todayIso() : null;
+    }
     return this.taskRepository.save(task);
   }
 
@@ -220,8 +253,35 @@ export class TasksService {
     if (dto.projectName !== undefined && dto.projectName !== task.projectName) {
       await this.ensurePmManagesProject(requester, dto.projectName);
     }
-    await this.taskRepository.update(id, dto);
+    if (dto.blockedByTaskIds) {
+      await this.validateBlockedByTaskIds(dto.projectName ?? task.projectName, dto.blockedByTaskIds, id);
+    }
+
+    // A status change is the source of truth for completedAt — every rollup/critical-path/scoring
+    // calculation reads completedAt, not status, as the "is this done" signal, so keep them in sync:
+    // moving to COMPLETED stamps it (today if not given explicitly), moving away clears it. Passing
+    // `undefined` here is a no-op to TypeORM's update(), so a plain completedAt edit with no status
+    // change behaves exactly as before.
+    const completedAt: string | null | undefined =
+      dto.status === undefined
+        ? dto.completedAt
+        : dto.status === TaskStatus.COMPLETED
+          ? dto.completedAt ?? task.completedAt ?? todayIso()
+          : null;
+
+    await this.taskRepository.update(id, { ...dto, completedAt });
     return this.taskRepository.findOneOrFail({ where: { id } });
+  }
+
+  /**
+   * Task-level critical path across every leaf task in the project — driven
+   * by blockedByTaskIds, distinct from getProjectHealth's Epic-level one
+   * (driven by blockedByIssues/blockedByEpicKeys). See TaskCriticalPathService.
+   */
+  async getTaskCriticalPath(projectName: string, requester: AuthenticatedUser): Promise<TaskCriticalPathReport> {
+    await this.ensurePmManagesProject(requester, projectName);
+    const tasks = await this.taskRepository.find({ where: { projectName } });
+    return this.taskCriticalPathService.compute(tasks);
   }
 
   /**
@@ -607,6 +667,7 @@ export class TasksService {
 
     task.actualHours = dto.actualHours;
     task.completedAt = dto.completedAt;
+    task.status = TaskStatus.COMPLETED;
     task.bugCount = dto.bugCount ?? task.bugCount;
     task.pmRating = dto.pmRating ?? task.pmRating;
     return this.taskRepository.save(task);

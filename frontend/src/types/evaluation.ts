@@ -1,4 +1,4 @@
-import { EvaluationPeriod, EvaluationStatus } from './common';
+import { EvaluationPeriod, EvaluationStatus, TaskStatus } from './common';
 
 export interface Evaluation {
   id: string;
@@ -39,6 +39,8 @@ export interface TaskRecord {
   points: number;
   pmRating: number | null;
   bugCount: number;
+  /** Workflow status — kept in sync with completedAt by the backend (COMPLETED stamps it, TODO/IN_PROGRESS clears it). */
+  status: TaskStatus;
   completedAt: string | null;
   createdAt: string;
   jiraIssueKey: string | null;
@@ -46,6 +48,8 @@ export interface TaskRecord {
   issueType: string | null;
   /** Other Jira issues (usually bugs) that block this one — empty when none or not Jira-synced. */
   blockedByIssues: BlockedByIssueRef[];
+  /** Other task ids (in this same project) that must finish before this one can — drives the task-level critical path, shown by taskCode. */
+  blockedByTaskIds: string[];
   /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
   projectSprintId: string | null;
   /** The Epic this issue ultimately belongs to (that Epic's own jiraIssueKey) — null for the Epic issue itself and for issues with no Epic. */

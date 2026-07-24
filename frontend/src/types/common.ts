@@ -50,6 +50,13 @@ export enum ProjectStatus {
   COMPLETED = 'completed',
 }
 
+/** Manually-set per-task workflow status. The backend keeps completedAt in sync with this. */
+export enum TaskStatus {
+  TODO = 'todo',
+  IN_PROGRESS = 'in_progress',
+  COMPLETED = 'completed',
+}
+
 export enum LevelHistorySource {
   INITIAL = 'initial',
   AUTO_PROMOTION = 'auto_promotion',

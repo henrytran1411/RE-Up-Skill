@@ -1,4 +1,5 @@
-import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+import { TaskStatus } from '../../common/enums/task-status.enum';
 
 export class CreateTaskRecordDto {
   @IsUUID()
@@ -36,4 +37,15 @@ export class CreateTaskRecordDto {
   @IsUUID()
   @IsOptional()
   projectSprintId?: string;
+
+  /** Other task ids (in this same project) that must finish before this one can — drives the task-level critical path. */
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  @IsOptional()
+  blockedByTaskIds?: string[];
+
+  /** Workflow status — defaults to To Do. Setting COMPLETED without completedAt auto-stamps today. */
+  @IsEnum(TaskStatus)
+  @IsOptional()
+  status?: TaskStatus;
 }

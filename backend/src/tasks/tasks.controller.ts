@@ -113,6 +113,17 @@ export class TasksController {
     return this.tasksService.getProjectHealth(projectName, user);
   }
 
+  /**
+   * Task-level critical path across every leaf task in the project — driven
+   * by each task's own blockedByTaskIds, distinct from the Epic-level one at
+   * GET .../health. A PM only sees this for a project they manage.
+   */
+  @Get('projects/:projectName/critical-path-tasks')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  getTaskCriticalPath(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.getTaskCriticalPath(projectName, user);
+  }
+
   @Patch(':id/complete')
   @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   complete(@Param('id') id: string, @Body() dto: CompleteTaskRecordDto, @CurrentUser() user: AuthenticatedUser) {

@@ -10,6 +10,7 @@ import {
 import { Employee } from '../../employees/entities/employee.entity';
 import { DecimalColumnTransformer } from '../../common/transformers/decimal.transformer';
 import { JsonArrayColumnTransformer } from '../../common/transformers/json-array.transformer';
+import { TaskStatus } from '../../common/enums/task-status.enum';
 
 /** One Jira issue (usually a Bug) that blocks a task, captured from Jira's "is blocked by" issue links. */
 export interface BlockedByIssueRef {
@@ -72,6 +73,16 @@ export class TaskRecord {
   @Column({ type: 'int', default: 0 })
   bugCount: number;
 
+  /**
+   * Manually-set workflow status. Kept in sync with `completedAt` by
+   * TasksService — moving to COMPLETED stamps `completedAt` (today if not
+   * given), moving to TODO/IN_PROGRESS clears it, since every rollup/
+   * critical-path/scoring calculation reads `completedAt`, not this field,
+   * as the "is this done" signal.
+   */
+  @Column({ type: 'enum', enum: TaskStatus, default: TaskStatus.TODO })
+  status: TaskStatus;
+
   @Column({ type: 'date', nullable: true })
   completedAt: string | null;
 
@@ -86,6 +97,18 @@ export class TaskRecord {
   /** Other Jira issues (usually bugs) that block this one — empty when none or not Jira-synced. */
   @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
   blockedByIssues: BlockedByIssueRef[];
+
+  /**
+   * Other TaskRecord rows (by their own `id`, in this same project) that
+   * must finish before this one can — the input to the task-level critical
+   * path calculation (see TaskCriticalPathService), distinct from the
+   * Epic-level `blockedByIssues`/`blockedByEpicKeys` mechanism above. Set
+   * manually via the task edit form, or seeded from Jira issue links during
+   * sync — either way it's a plain task-id reference, resolved to the
+   * blocking task's `taskCode` for display.
+   */
+  @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
+  blockedByTaskIds: string[];
 
   /** The Epic this issue ultimately belongs to — the Epic's own `jiraIssueKey` (or, for non-Jira example data, any unique key). Set on both a Story (its direct parent) and a Task/Bug/Sub-task (its Story's parent, resolved during sync). Null for the Epic issue itself and for issues with no Epic. */
   @Column({ type: 'varchar', length: 50, nullable: true })

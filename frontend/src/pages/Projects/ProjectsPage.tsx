@@ -50,7 +50,7 @@ import {
   setEpicDependencies,
 } from '../../services/taskService';
 import { fetchAllEmployees } from '../../services/employeeService';
-import { fetchProjectHealth } from '../../services/projectHealthService';
+import { fetchProjectHealth, fetchTaskCriticalPath } from '../../services/projectHealthService';
 import {
   fetchSprintsForProject,
   createSprint,
@@ -68,6 +68,8 @@ import { ProjectEffortChart } from '../../components/ProjectEffortChart';
 import { ProjectContributionChart } from '../../components/ProjectContributionChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
 import { ProjectHealthPanel } from '../../components/ProjectHealthPanel';
+import { TaskCriticalPathPanel } from '../../components/TaskCriticalPathPanel';
+import { TaskDependencyTags } from '../../components/TaskDependencyTags';
 import {
   ProjectSummary,
   ProjectOverview,
@@ -76,14 +78,20 @@ import {
   PublicProjectContributor,
   hasRoiData,
 } from '../../types/project';
-import { ProjectHealthReport, EpicHealth } from '../../types/projectHealth';
+import { ProjectHealthReport, EpicHealth, TaskCriticalPathReport } from '../../types/projectHealth';
 import { ProjectSprint } from '../../types/projectSprint';
 import { ProjectNote } from '../../types/projectNote';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
 import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { useAuth } from '../../context/AuthContext';
-import { Role, ProjectStatus } from '../../types/common';
+import { Role, ProjectStatus, TaskStatus } from '../../types/common';
+
+const TASK_STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
+  { value: TaskStatus.TODO, label: 'To Do' },
+  { value: TaskStatus.IN_PROGRESS, label: 'In Progress' },
+  { value: TaskStatus.COMPLETED, label: 'Completed' },
+];
 
 function formatMoney(value: number | null): string {
   if (value === null) return '—';
@@ -128,6 +136,8 @@ export function ProjectsPage() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [healthReport, setHealthReport] = useState<ProjectHealthReport | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [taskCriticalPathReport, setTaskCriticalPathReport] = useState<TaskCriticalPathReport | null>(null);
+  const [taskCriticalPathLoading, setTaskCriticalPathLoading] = useState(false);
   const [sprints, setSprints] = useState<ProjectSprint[]>([]);
   const [sprintsLoading, setSprintsLoading] = useState(false);
   const [sprintModalOpen, setSprintModalOpen] = useState(false);
@@ -143,6 +153,7 @@ export function ProjectsPage() {
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
   const [noteForm] = Form.useForm();
   const [savingTaskSprintId, setSavingTaskSprintId] = useState<string | null>(null);
+  const [savingTaskStatusId, setSavingTaskStatusId] = useState<string | null>(null);
   const [savingEpicDependencyKey, setSavingEpicDependencyKey] = useState<string | null>(null);
   const [editingSalaryId, setEditingSalaryId] = useState<string | null>(null);
   const [salaryDraft, setSalaryDraft] = useState<number | null>(null);
@@ -190,6 +201,18 @@ export function ProjectsPage() {
     }
   };
 
+  const loadTaskCriticalPath = async (projectName: string) => {
+    if (!canManageTasks) return;
+    setTaskCriticalPathLoading(true);
+    try {
+      setTaskCriticalPathReport(await fetchTaskCriticalPath(projectName));
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to load task critical path'));
+    } finally {
+      setTaskCriticalPathLoading(false);
+    }
+  };
+
   const loadSprints = async (projectName: string) => {
     if (!canManageTasks) return;
     setSprintsLoading(true);
@@ -227,6 +250,7 @@ export function ProjectsPage() {
       await Promise.all([
         loadProjectTasks(projectName),
         loadProjectHealth(projectName),
+        loadTaskCriticalPath(projectName),
         loadSprints(projectName),
         loadNotes(projectName),
       ]);
@@ -244,6 +268,7 @@ export function ProjectsPage() {
     await Promise.all([
       loadProjectTasks(projectName),
       loadProjectHealth(projectName),
+      loadTaskCriticalPath(projectName),
       loadSprints(projectName),
       loadNotes(projectName),
     ]);
@@ -306,6 +331,7 @@ export function ProjectsPage() {
   const openCreateTaskModal = () => {
     setEditingTask(null);
     taskForm.resetFields();
+    taskForm.setFieldsValue({ status: TaskStatus.TODO });
     setTaskModalOpen(true);
   };
 
@@ -320,6 +346,8 @@ export function ProjectsPage() {
       points: task.points,
       actualHours: task.actualHours ?? undefined,
       completedAt: task.completedAt ? dayjs(task.completedAt) : undefined,
+      blockedByTaskIds: task.blockedByTaskIds ?? [],
+      status: task.status,
     });
     setTaskModalOpen(true);
   };
@@ -491,6 +519,20 @@ export function ProjectsPage() {
       message.error(errorMessage(err, 'Failed to update task sprint'));
     } finally {
       setSavingTaskSprintId(null);
+    }
+  };
+
+  const handleTaskStatusChange = async (task: TaskWithEmployee, status: TaskStatus) => {
+    if (!detail) return;
+    setSavingTaskStatusId(task.id);
+    try {
+      await updateTask(task.id, { status });
+      message.success('Task status updated');
+      await refreshDetail(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to update task status'));
+    } finally {
+      setSavingTaskStatusId(null);
     }
   };
 
@@ -690,35 +732,6 @@ export function ProjectsPage() {
                       </Col>
                     </Row>
 
-                    <ProjectEffortChart contributors={detail.contributors} />
-
-                    <Table
-                      rowKey="employeeId"
-                      size="small"
-                      style={{ marginTop: 16 }}
-                      pagination={false}
-                      dataSource={detail.contributors}
-                      columns={[
-                        { title: 'Employee', dataIndex: 'employeeName' },
-                        { title: 'Tasks', dataIndex: 'taskCount' },
-                        {
-                          title: 'Points',
-                          render: (_, record: PublicProjectContributor) =>
-                            `${record.points} (${record.pointsEffortPercent}%)`,
-                        },
-                        {
-                          title: 'Estimate hrs',
-                          render: (_, record: PublicProjectContributor) =>
-                            `${record.estimateHours} (${record.estimateEffortPercent}%)`,
-                        },
-                        {
-                          title: 'Actual hrs',
-                          render: (_, record: PublicProjectContributor) =>
-                            `${record.actualHours} (${record.actualEffortPercent}%)`,
-                        },
-                      ]}
-                    />
-
                     {canManage && (
                       <>
                         <Typography.Title level={5} style={{ marginTop: 24 }}>
@@ -778,6 +791,42 @@ export function ProjectsPage() {
                       Project Health Check
                     </Typography.Title>
                     {healthLoading || !healthReport ? 'Loading…' : <ProjectHealthPanel report={healthReport} />}
+                  </>
+                ),
+              },
+              {
+                key: 'members',
+                label: 'Members',
+                children: (
+                  <>
+                    <ProjectEffortChart contributors={detail.contributors} />
+
+                    <Table
+                      rowKey="employeeId"
+                      size="small"
+                      style={{ marginTop: 16 }}
+                      pagination={false}
+                      dataSource={detail.contributors}
+                      columns={[
+                        { title: 'Employee', dataIndex: 'employeeName' },
+                        { title: 'Tasks', dataIndex: 'taskCount' },
+                        {
+                          title: 'Points',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.points} (${record.pointsEffortPercent}%)`,
+                        },
+                        {
+                          title: 'Estimate hrs',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.estimateHours} (${record.estimateEffortPercent}%)`,
+                        },
+                        {
+                          title: 'Actual hrs',
+                          render: (_, record: PublicProjectContributor) =>
+                            `${record.actualHours} (${record.actualEffortPercent}%)`,
+                        },
+                      ]}
+                    />
                   </>
                 ),
               },
@@ -857,8 +906,34 @@ export function ProjectsPage() {
                                   ),
                               },
                               {
+                                title: 'Status',
+                                render: (_, record: TaskTreeRow) =>
+                                  record.children ? (
+                                    '—'
+                                  ) : (
+                                    <Select
+                                      size="small"
+                                      style={{ width: 130 }}
+                                      value={record.status}
+                                      loading={savingTaskStatusId === record.id}
+                                      disabled={savingTaskStatusId === record.id}
+                                      onChange={(value) => handleTaskStatusChange(record, value)}
+                                      options={TASK_STATUS_OPTIONS}
+                                    />
+                                  ),
+                              },
+                              {
                                 title: 'Completed',
                                 render: (_, record: TaskWithEmployee) => record.completedAt ?? '—',
+                              },
+                              {
+                                title: 'Blocked By',
+                                render: (_, record: TaskWithEmployee) => (
+                                  <TaskDependencyTags
+                                    blockedByTaskIds={record.blockedByTaskIds ?? []}
+                                    allTasks={projectTasks}
+                                  />
+                                ),
                               },
                               {
                                 title: 'Actions',
@@ -1022,7 +1097,7 @@ export function ProjectsPage() {
                 ? [
                     {
                       key: 'criticalPath',
-                      label: 'Critical Path',
+                      label: 'Critical Path (Epics)',
                       children: (
                         <>
                           <Typography.Paragraph type="secondary">
@@ -1084,6 +1159,28 @@ export function ProjectsPage() {
                                 </Typography.Paragraph>
                               )}
                             </>
+                          )}
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(canManageTasks
+                ? [
+                    {
+                      key: 'taskCriticalPath',
+                      label: 'Critical Path (All Tasks)',
+                      children: (
+                        <>
+                          <Typography.Paragraph type="secondary">
+                            The longest blocked-by chain across every task in the project (set each task&apos;s
+                            &quot;Blocked by&quot; in the task edit form). Tasks not on this chain are grouped by
+                            Epic below, showing their total estimate hours.
+                          </Typography.Paragraph>
+                          {taskCriticalPathLoading || !taskCriticalPathReport ? (
+                            'Loading…'
+                          ) : (
+                            <TaskCriticalPathPanel report={taskCriticalPathReport} />
                           )}
                         </>
                       ),
@@ -1248,8 +1345,30 @@ export function ProjectsPage() {
           <Form.Item name="actualHours" label="Actual hours">
             <InputNumber min={0} />
           </Form.Item>
-          <Form.Item name="completedAt" label="Completed date">
+          <Form.Item name="status" label="Status">
+            <Select options={TASK_STATUS_OPTIONS} />
+          </Form.Item>
+          <Form.Item
+            name="completedAt"
+            label="Completed date"
+            extra="Only used when status is Completed — defaults to today if left blank."
+          >
             <DatePicker style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="blockedByTaskIds"
+            label="Blocked by"
+            extra="Other tasks in this project that must finish first — drives the task-level critical path."
+          >
+            <Select
+              mode="multiple"
+              placeholder="None"
+              options={projectTasks
+                .filter((t) => t.id !== editingTask?.id)
+                .map((t) => ({ value: t.id, label: t.taskCode ?? t.taskName }))}
+              showSearch
+              optionFilterProp="label"
+            />
           </Form.Item>
         </Form>
       </Modal>

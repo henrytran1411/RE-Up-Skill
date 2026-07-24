@@ -29,3 +29,32 @@ export interface ProjectHealthReport {
   daysLate: number | null;
   status: ProjectHealthStatus;
 }
+
+export interface CriticalPathTaskNode {
+  id: string;
+  taskCode: string | null;
+  taskName: string;
+  epicKey: string | null;
+  epicName: string | null;
+  points: number;
+  completedAt: string | null;
+}
+
+export interface NonCriticalEpicGroup {
+  epicKey: string | null;
+  epicName: string;
+  taskCount: number;
+  totalEstimateHours: number;
+}
+
+/** The task-level critical path across every leaf task in a project — distinct from ProjectHealthReport's Epic-level one. */
+export interface TaskCriticalPathReport {
+  criticalPath: CriticalPathTaskNode[];
+  criticalPathTotalPoints: number;
+  criticalPathCompletedPoints: number;
+  criticalPathPercentDone: number;
+  allTasksTotalPoints: number;
+  allTasksCompletedPoints: number;
+  allTasksPercentDone: number;
+  nonCriticalByEpic: NonCriticalEpicGroup[];
+}

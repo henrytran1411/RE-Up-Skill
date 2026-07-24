@@ -5,13 +5,14 @@ import { TasksService } from './tasks.service';
 import { TasksController } from './tasks.controller';
 import { ProjectHealthService } from './project-health.service';
 import { TaskCodeService } from './task-code.service';
+import { TaskCriticalPathService } from './task-critical-path.service';
 import { EmployeesModule } from '../employees/employees.module';
 import { ProjectsModule } from '../projects/projects.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([TaskRecord]), EmployeesModule, ProjectsModule],
   controllers: [TasksController],
-  providers: [TasksService, ProjectHealthService, TaskCodeService],
+  providers: [TasksService, ProjectHealthService, TaskCodeService, TaskCriticalPathService],
   exports: [TasksService, TaskCodeService],
 })
 export class TasksModule {}

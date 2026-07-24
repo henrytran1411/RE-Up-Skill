@@ -1,5 +1,6 @@
 import { apiClient } from './apiClient';
 import { TaskRecord, TaskWithEmployee } from '../types/evaluation';
+import { TaskStatus } from '../types/common';
 
 export async function fetchTasksForProject(projectName: string): Promise<TaskWithEmployee[]> {
   const { data } = await apiClient.get<TaskWithEmployee[]>(
@@ -20,6 +21,10 @@ export interface CreateTaskPayload {
   actualHours?: number;
   /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
   projectSprintId?: string;
+  /** Other task ids (in this same project) that must finish before this one can — drives the task-level critical path. */
+  blockedByTaskIds?: string[];
+  /** Workflow status. Setting COMPLETED without completedAt auto-stamps today; setting TODO/IN_PROGRESS clears completedAt server-side. */
+  status?: TaskStatus;
 }
 
 export async function createTask(payload: CreateTaskPayload): Promise<TaskRecord> {
