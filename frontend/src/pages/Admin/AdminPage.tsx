@@ -454,11 +454,12 @@ export function AdminPage() {
               Pull every task for every member of a single Jira project right now — independent of the selection
               above. Any assignee with no matching employee gets a Developer/Junior account auto-created (guessed
               email, default temp password <code>{DEFAULT_TEMP_PASSWORD}</code> — review these before handing them
-              out) so their tasks are picked up in the same run, skipping only bots/inactive Jira accounts. If a
-              task is assigned into a Jira sprint, that sprint is created here first (appended after any existing
-              ones) and the task is assigned to it. Epic/User Story/Task/Bug/Sub-task issues are then given a
-              matching taskCode (Epic-1, US-1.1, Task-1.1.1, Bug-1.1.1.1, SubTask-1.1.1.1) based on their Jira
-              creation order.
+              out) so their tasks are picked up in the same run, skipping only bots/inactive Jira accounts. Issues
+              with no assignee in Jira at all are synced too, under a shared "Unassigned (Jira)" placeholder
+              employee — reassign these to their real owner afterward. If a task is assigned into a Jira sprint,
+              that sprint is created here first (appended after any existing ones) and the task is assigned to it.
+              Epic/User Story/Task/Bug/Sub-task issues are then given a matching taskCode (Epic-1, US-1.1,
+              Task-1.1.1, Bug-1.1.1.1, SubTask-1.1.1.1) based on their Jira creation order.
             </Typography.Paragraph>
             <Space>
               <Select
@@ -485,7 +486,7 @@ export function AdminPage() {
                 style={{ marginTop: 12 }}
                 type={singleProjectSyncResult.status === 'failed' ? 'error' : 'success'}
                 showIcon
-                message={`${singleProjectSyncResult.status}: ${singleProjectSyncResult.issuesFetched} fetched, ${singleProjectSyncResult.tasksCreated} created, ${singleProjectSyncResult.tasksUpdated} updated, ${singleProjectSyncResult.tasksSkipped} skipped, ${singleProjectSyncResult.employeesCreated?.length ?? 0} employee(s) auto-created, ${singleProjectSyncResult.sprintsCreated ?? 0} sprint(s) created, ${singleProjectSyncResult.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${singleProjectSyncResult.taskCodesAssigned ?? 0} task code(s) assigned`}
+                message={`${singleProjectSyncResult.status}: ${singleProjectSyncResult.issuesFetched} fetched, ${singleProjectSyncResult.tasksCreated} created, ${singleProjectSyncResult.tasksUpdated} updated, ${singleProjectSyncResult.tasksSkipped} skipped (${singleProjectSyncResult.tasksWithoutAssignee ?? 0} unassigned, synced anyway), ${singleProjectSyncResult.employeesCreated?.length ?? 0} employee(s) auto-created, ${singleProjectSyncResult.sprintsCreated ?? 0} sprint(s) created, ${singleProjectSyncResult.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${singleProjectSyncResult.taskCodesAssigned ?? 0} task code(s) assigned`}
                 description={
                   <Space direction="vertical" size="small">
                     {singleProjectSyncResult.errorMessage && <span>{singleProjectSyncResult.errorMessage}</span>}

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomBytes } from 'node:crypto';
 import { TaskRecord, BlockedByIssueRef } from '../tasks/entities/task-record.entity';
 import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
@@ -146,6 +147,8 @@ export interface JiraSyncSummary {
   sprintsCreated?: number;
   /** Set only by a single-project sync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
   tasksAssignedToSprint?: number;
+  /** Set only by a single-project sync — issues with no assignee in Jira at all, synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped. Reassign these to the real owner once known. */
+  tasksWithoutAssignee?: number;
 }
 
 export interface JiraProjectSyncSummary {
@@ -177,6 +180,18 @@ const MAX_USERS_PER_PAGE = 50;
 
 /** Same default the Admin page's "Quick Create" flow uses — meant to be handed to the person and changed, not kept. */
 const DEFAULT_AUTO_CREATED_PASSWORD = 'Password123!';
+
+/**
+ * A single shared placeholder Employee used by syncSingleProjectFromJira to
+ * hold tasks whose Jira issue has no assignee at all, instead of skipping
+ * them — TaskRecord.employeeId is a required real FK, so there's no way to
+ * store "no owner yet" without something to point at. A fake, never-logged-
+ * into domain avoids colliding with any real person's guessed email; the
+ * random password matches the self-provisioning convention used for
+ * Microsoft-login accounts, since nobody is meant to sign in as this one.
+ */
+const UNASSIGNED_PLACEHOLDER_EMAIL = 'unassigned-jira@devperf.internal';
+const UNASSIGNED_PLACEHOLDER_NAME = 'Unassigned (Jira)';
 
 @Injectable()
 export class JiraService {
@@ -667,13 +682,44 @@ export class JiraService {
   }
 
   /**
+   * Finds (or creates, on first use) the shared placeholder Employee that
+   * holds tasks synced from an assignee-less Jira issue — see
+   * UNASSIGNED_PLACEHOLDER_EMAIL. Only called by syncSingleProjectFromJira.
+   */
+  private async resolveUnassignedPlaceholderEmployeeId(): Promise<string> {
+    const existing = await this.employeesService.findByEmail(UNASSIGNED_PLACEHOLDER_EMAIL);
+    if (existing) {
+      return existing.id;
+    }
+    const joinDate = new Date().toISOString().slice(0, 10);
+    const created = await this.employeesService.create({
+      fullName: UNASSIGNED_PLACEHOLDER_NAME,
+      email: UNASSIGNED_PLACEHOLDER_EMAIL,
+      password: randomBytes(24).toString('hex'),
+      role: 'developer',
+      level: 'Junior',
+      levelEffectiveDate: joinDate,
+      joinDate,
+    });
+    return created.id;
+  }
+
+  /**
    * Upserts one issue into task_records, matched by jiraIssueKey —
-   * re-running a sync updates existing rows instead of duplicating. Returns
-   * 'skipped' for no-assignee or no-mapped-employee, recording the latter
-   * in `unmatched`. Note this applies to Epics and Stories too: one with no
-   * assignee in Jira won't sync, so the Task Management hierarchy will have
-   * no parent row for its children to nest under — assign Epics/Stories in
-   * Jira if you want them to anchor the grouping.
+   * re-running a sync updates existing rows instead of duplicating.
+   *
+   * An issue with an assignee Jira account that has no mapped Employee is
+   * still skipped (recorded in `unmatched`) — that's a real person who
+   * needs mapping, not guessed. An issue with NO assignee at all is only
+   * skipped when `unassignedPlaceholderEmployeeId` is null (the bulk
+   * sync's behavior); syncSingleProjectFromJira passes a real id instead,
+   * so the task still syncs under the shared placeholder employee — see
+   * resolveUnassignedPlaceholderEmployeeId — to be manually reassigned
+   * later rather than lost. Note the unmatched-assignee case applies to
+   * Epics and Stories too: one with no assignee in Jira won't sync, so the
+   * Task Management hierarchy will have no parent row for its children to
+   * nest under — assign Epics/Stories in Jira if you want them to anchor
+   * the grouping.
    *
    * When `sprintFieldId` is given and the issue carries a Jira sprint (see
    * pickCurrentSprint), finds or creates the matching ProjectSprint via
@@ -689,16 +735,29 @@ export class JiraService {
     hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
     unmatched: Map<string, UnmatchedAssignee>,
     sprintFieldId: string | null,
-  ): Promise<{ outcome: 'created' | 'updated' | 'skipped'; sprintCreated: boolean; sprintAssigned: boolean }> {
+    unassignedPlaceholderEmployeeId: string | null,
+  ): Promise<{
+    outcome: 'created' | 'updated' | 'skipped';
+    sprintCreated: boolean;
+    sprintAssigned: boolean;
+    usedPlaceholder: boolean;
+  }> {
     const mapped = this.mapIssueToTaskFields(issue, storyPointsField, hierarchy, sprintFieldId);
-    if (!mapped.assigneeAccountId) {
-      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false };
-    }
 
-    const employee = await this.employeesService.findByJiraAccountId(mapped.assigneeAccountId);
-    if (!employee) {
-      this.recordUnmatched(unmatched, mapped.assigneeAccountId, mapped.assigneeDisplayName);
-      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false };
+    let employeeId: string;
+    let usedPlaceholder = false;
+    if (mapped.assigneeAccountId) {
+      const employee = await this.employeesService.findByJiraAccountId(mapped.assigneeAccountId);
+      if (!employee) {
+        this.recordUnmatched(unmatched, mapped.assigneeAccountId, mapped.assigneeDisplayName);
+        return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
+      }
+      employeeId = employee.id;
+    } else if (unassignedPlaceholderEmployeeId) {
+      employeeId = unassignedPlaceholderEmployeeId;
+      usedPlaceholder = true;
+    } else {
+      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
     }
 
     let sprintCreated = false;
@@ -713,7 +772,7 @@ export class JiraService {
     }
 
     const taskFields = {
-      employeeId: employee.id,
+      employeeId,
       projectName: mapped.projectName,
       taskName: mapped.taskName,
       estimateHours: mapped.estimateHours,
@@ -731,12 +790,12 @@ export class JiraService {
     const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
     if (existing) {
       await this.taskRepository.save(Object.assign(existing, taskFields));
-      return { outcome: 'updated', sprintCreated, sprintAssigned: projectSprintId !== undefined };
+      return { outcome: 'updated', sprintCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
     }
 
     const task = this.taskRepository.create({ ...taskFields, jiraIssueKey: issue.key, createdAt: mapped.createdAt });
     await this.taskRepository.save(task);
-    return { outcome: 'created', sprintCreated, sprintAssigned: projectSprintId !== undefined };
+    return { outcome: 'created', sprintCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
   }
 
   /**
@@ -746,24 +805,31 @@ export class JiraService {
    * resolving any single issue's ancestry needs to see every other issue's
    * parent link, not just its own.
    */
-  private async syncAllIssues(issues: JiraIssue[], storyPointsField: string, sprintFieldId: string | null = null) {
+  private async syncAllIssues(
+    issues: JiraIssue[],
+    storyPointsField: string,
+    sprintFieldId: string | null = null,
+    unassignedPlaceholderEmployeeId: string | null = null,
+  ) {
     const hierarchy = this.buildHierarchyIndex(issues);
     let tasksCreated = 0;
     let tasksUpdated = 0;
     let tasksSkipped = 0;
     let sprintsCreated = 0;
     let tasksAssignedToSprint = 0;
+    let tasksWithoutAssignee = 0;
     const issueErrors: string[] = [];
     const unmatched = new Map<string, UnmatchedAssignee>();
 
     for (const issue of issues) {
       try {
-        const { outcome, sprintCreated, sprintAssigned } = await this.syncOneIssue(
+        const { outcome, sprintCreated, sprintAssigned, usedPlaceholder } = await this.syncOneIssue(
           issue,
           storyPointsField,
           hierarchy,
           unmatched,
           sprintFieldId,
+          unassignedPlaceholderEmployeeId,
         );
         if (outcome === 'created') {
           tasksCreated++;
@@ -778,13 +844,25 @@ export class JiraService {
         if (sprintAssigned) {
           tasksAssignedToSprint++;
         }
+        if (usedPlaceholder) {
+          tasksWithoutAssignee++;
+        }
       } catch (err) {
         tasksSkipped++;
         issueErrors.push(`${issue.key}: ${err instanceof Error ? err.message : 'unknown error'}`);
       }
     }
 
-    return { tasksCreated, tasksUpdated, tasksSkipped, sprintsCreated, tasksAssignedToSprint, issueErrors, unmatched };
+    return {
+      tasksCreated,
+      tasksUpdated,
+      tasksSkipped,
+      sprintsCreated,
+      tasksAssignedToSprint,
+      tasksWithoutAssignee,
+      issueErrors,
+      unmatched,
+    };
   }
 
   /**
@@ -865,14 +943,23 @@ export class JiraService {
     return summary;
   }
 
-  /** Shared by syncTasksFromJira and syncSingleProjectFromJira: upserts `issues` (already fetched) and builds the resulting summary, without logging/saving — callers do that themselves since their log messages differ. `sprintFieldId` is only passed by syncSingleProjectFromJira. */
+  /** Shared by syncTasksFromJira and syncSingleProjectFromJira: upserts `issues` (already fetched) and builds the resulting summary, without logging/saving — callers do that themselves since their log messages differ. `sprintFieldId`/`unassignedPlaceholderEmployeeId` are only passed by syncSingleProjectFromJira. */
   private async fetchAndSyncIssues(
     issues: JiraIssue[],
     connection: JiraConnection,
     sprintFieldId: string | null = null,
+    unassignedPlaceholderEmployeeId: string | null = null,
   ): Promise<{ summary: JiraSyncSummary }> {
-    const { tasksCreated, tasksUpdated, tasksSkipped, sprintsCreated, tasksAssignedToSprint, issueErrors, unmatched } =
-      await this.syncAllIssues(issues, connection.storyPointsField, sprintFieldId);
+    const {
+      tasksCreated,
+      tasksUpdated,
+      tasksSkipped,
+      sprintsCreated,
+      tasksAssignedToSprint,
+      tasksWithoutAssignee,
+      issueErrors,
+      unmatched,
+    } = await this.syncAllIssues(issues, connection.storyPointsField, sprintFieldId, unassignedPlaceholderEmployeeId);
     const summary: JiraSyncSummary = {
       status: issueErrors.length === 0 ? JiraSyncStatus.SUCCESS : JiraSyncStatus.PARTIAL,
       issuesFetched: issues.length,
@@ -882,6 +969,7 @@ export class JiraService {
       errorMessage: issueErrors.length > 0 ? issueErrors.slice(0, 20).join('; ') : null,
       unmatchedAssignees: Array.from(unmatched.values()),
       ...(sprintFieldId ? { sprintsCreated, tasksAssignedToSprint } : {}),
+      ...(unassignedPlaceholderEmployeeId ? { tasksWithoutAssignee } : {}),
     };
     return { summary };
   }
@@ -904,6 +992,14 @@ export class JiraService {
    * it — see pickCurrentSprint for how the "current" sprint is chosen when
    * an issue has moved through more than one.
    *
+   * An issue with NO assignee at all in Jira still syncs — under the
+   * shared "Unassigned (Jira)" placeholder employee (see
+   * resolveUnassignedPlaceholderEmployeeId) — rather than being skipped,
+   * so the task data isn't lost; reassign these to their real owner once
+   * known. This differs from the unmatched-assignee case (a real Jira
+   * person with no mapped Employee), which still needs mapping and isn't
+   * synced until then.
+   *
    * After that, recomputes every synced issue's `taskCode`
    * (Epic-1/US-1.1/Task-1.1.1/Bug-1.1.1.1/SubTask-1.1.1.1) via
    * TaskCodeService — see assignTaskCodesForProject for the numbering
@@ -922,6 +1018,7 @@ export class JiraService {
     }
 
     const sprintFieldId = await this.resolveSprintFieldId(connection);
+    const unassignedPlaceholderEmployeeId = await this.resolveUnassignedPlaceholderEmployeeId();
 
     const jql = `project in ("${projectKey.replace(/"/g, '')}") order by updated asc`;
     let issues: JiraIssue[];
@@ -947,13 +1044,13 @@ export class JiraService {
       return summary;
     }
 
-    let { summary } = await this.fetchAndSyncIssues(issues, connection, sprintFieldId);
+    let { summary } = await this.fetchAndSyncIssues(issues, connection, sprintFieldId, unassignedPlaceholderEmployeeId);
 
     if (summary.unmatchedAssignees.length > 0) {
       const employeesCreated = await this.autoCreateEmployeesForUnmatched(summary.unmatchedAssignees, connection);
       if (employeesCreated.length > 0) {
         // Re-sync the same already-fetched issues now that these accounts exist, so their tasks are picked up in this same run.
-        const resynced = await this.fetchAndSyncIssues(issues, connection, sprintFieldId);
+        const resynced = await this.fetchAndSyncIssues(issues, connection, sprintFieldId, unassignedPlaceholderEmployeeId);
         summary = resynced.summary;
         summary.employeesCreated = employeesCreated;
       }
@@ -965,7 +1062,7 @@ export class JiraService {
     }
 
     this.logger.log(
-      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped, ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} unassigned, synced anyway), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

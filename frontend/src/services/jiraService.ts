@@ -43,6 +43,8 @@ export interface JiraSyncSummary {
   sprintsCreated?: number;
   /** Set only by runJiraSingleProjectSync — how many synced tasks got a projectSprintId from Jira's own Sprint field. */
   tasksAssignedToSprint?: number;
+  /** Set only by runJiraSingleProjectSync — issues with no assignee in Jira at all, synced under the shared "Unassigned (Jira)" placeholder employee instead of being skipped. Reassign these to the real owner once known. */
+  tasksWithoutAssignee?: number;
 }
 
 export async function runJiraSync(): Promise<JiraSyncSummary> {
