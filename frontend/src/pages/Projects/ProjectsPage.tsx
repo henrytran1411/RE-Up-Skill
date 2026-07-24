@@ -803,6 +803,15 @@ export function ProjectsPage() {
                     )}
 
                     <Typography.Title level={5} style={{ marginTop: 24 }}>
+                      Critical Path (All Tasks)
+                    </Typography.Title>
+                    {taskCriticalPathLoading || !taskCriticalPathReport ? (
+                      'Loading…'
+                    ) : (
+                      <TaskCriticalPathPanel report={taskCriticalPathReport} hideTables />
+                    )}
+
+                    <Typography.Title level={5} style={{ marginTop: 24 }}>
                       Project Health Check
                     </Typography.Title>
                     {healthLoading || !healthReport ? 'Loading…' : <ProjectHealthPanel report={healthReport} />}
