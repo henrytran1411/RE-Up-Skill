@@ -1,5 +1,6 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
 import { DecimalColumnTransformer } from '../../common/transformers/decimal.transformer';
+import { ProjectBoardType } from '../../common/enums/project-board-type.enum';
 
 /**
  * Admin-level record for a project. Projects themselves aren't a normalized
@@ -34,6 +35,10 @@ export class Project {
   /** PM/Admin-declared target completion date — the project health check compares its computed critical-path finish against this. */
   @Column({ type: 'date', nullable: true })
   targetEndDate: string | null;
+
+  /** Kanban vs. Agile (sprint-based) — hides the Sprint tab for Kanban projects. Defaults to AGILE; a Jira sync sets it explicitly based on whether the project's issues actually carry Sprint field data. */
+  @Column({ type: 'enum', enum: ProjectBoardType, default: ProjectBoardType.AGILE })
+  projectBoardType: ProjectBoardType;
 
   @CreateDateColumn()
   createdAt: Date;

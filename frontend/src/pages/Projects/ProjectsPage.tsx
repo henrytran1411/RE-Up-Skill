@@ -86,7 +86,12 @@ import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
 import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { useAuth } from '../../context/AuthContext';
-import { Role, ProjectStatus, TaskStatus } from '../../types/common';
+import { Role, ProjectStatus, ProjectBoardType, TaskStatus } from '../../types/common';
+
+const PROJECT_BOARD_TYPE_OPTIONS: { value: ProjectBoardType; label: string }[] = [
+  { value: ProjectBoardType.AGILE, label: 'Agile (Sprints)' },
+  { value: ProjectBoardType.KANBAN, label: 'Kanban (no Sprints)' },
+];
 
 const TASK_STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
   { value: TaskStatus.TODO, label: 'To Do' },
@@ -274,6 +279,17 @@ export function ProjectsPage() {
       loadSprints(projectName),
       loadNotes(projectName),
     ]);
+  };
+
+  const handleBoardTypeChange = async (projectBoardType: ProjectBoardType) => {
+    if (!detail) return;
+    try {
+      await upsertProject(detail.projectName, { projectBoardType });
+      message.success('Board type updated');
+      await refreshDetail(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to update board type'));
+    }
   };
 
   const handleSaveSettings = async () => {
@@ -790,6 +806,15 @@ export function ProjectsPage() {
                               style={{ width: 160 }}
                             />
                           </Space>
+                          <Space wrap>
+                            <span>Board type:</span>
+                            <Select
+                              style={{ width: 180 }}
+                              value={detail.projectBoardType}
+                              onChange={handleBoardTypeChange}
+                              options={PROJECT_BOARD_TYPE_OPTIONS}
+                            />
+                          </Space>
                           <Button
                             type="primary"
                             icon={<SaveOutlined />}
@@ -891,22 +916,42 @@ export function ProjectsPage() {
                               { title: 'Employee', render: (_, record: TaskWithEmployee) => record.employee.fullName },
                               {
                                 title: 'Sprint',
-                                render: (_, record: TaskWithEmployee) => (
-                                  <Select
-                                    size="small"
-                                    style={{ width: 110 }}
-                                    allowClear
-                                    placeholder="Unassigned"
-                                    value={record.projectSprintId ?? undefined}
-                                    loading={savingTaskSprintId === record.id}
-                                    disabled={savingTaskSprintId === record.id}
-                                    onChange={(value) => handleTaskSprintChange(record, value)}
-                                    options={sprints.map((s) => ({
-                                      value: s.id,
-                                      label: `Sprint ${s.sprintNumber}`,
-                                    }))}
-                                  />
-                                ),
+                                render: (_, record: TaskWithEmployee) => {
+                                  const history = record.sprintHistoryIds ?? [];
+                                  const carriedOver = history.length > 1;
+                                  return (
+                                    <Space direction="vertical" size={2}>
+                                      <Select
+                                        size="small"
+                                        style={{ width: 110 }}
+                                        allowClear
+                                        placeholder="Unassigned"
+                                        value={record.projectSprintId ?? undefined}
+                                        loading={savingTaskSprintId === record.id}
+                                        disabled={savingTaskSprintId === record.id}
+                                        onChange={(value) => handleTaskSprintChange(record, value)}
+                                        options={sprints.map((s) => ({
+                                          value: s.id,
+                                          label: `Sprint ${s.sprintNumber}`,
+                                        }))}
+                                      />
+                                      {carriedOver && (
+                                        <Tooltip
+                                          title={history
+                                            .map((id) => {
+                                              const s = sprints.find((sp) => sp.id === id);
+                                              return s ? `Sprint ${s.sprintNumber}` : 'Unknown sprint';
+                                            })
+                                            .join(' → ')}
+                                        >
+                                          <Tag color="gold" style={{ marginRight: 0 }}>
+                                            Carried Over
+                                          </Tag>
+                                        </Tooltip>
+                                      )}
+                                    </Space>
+                                  );
+                                },
                               },
                               {
                                 title: 'Estimate hrs',
@@ -996,7 +1041,7 @@ export function ProjectsPage() {
                     },
                   ]
                 : []),
-              ...(canManageTasks
+              ...(canManageTasks && detail.projectBoardType === ProjectBoardType.AGILE
                 ? [
                     {
                       key: 'sprint',

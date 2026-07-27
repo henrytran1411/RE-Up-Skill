@@ -1,4 +1,5 @@
-import { IsDateString, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { ProjectBoardType } from '../../common/enums/project-board-type.enum';
 
 /** All fields optional: HR/Admin can set revenue and/or assign a manager independently, or rename the project. */
 export class UpsertProjectDto {
@@ -31,4 +32,9 @@ export class UpsertProjectDto {
   @IsDateString()
   @IsOptional()
   targetEndDate?: string;
+
+  /** Kanban vs. Agile — Kanban hides the Sprint tab. Also set automatically by a Jira sync based on real Sprint field data. */
+  @IsEnum(ProjectBoardType)
+  @IsOptional()
+  projectBoardType?: ProjectBoardType;
 }

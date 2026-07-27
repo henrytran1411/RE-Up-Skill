@@ -49,6 +49,7 @@ export class ProjectsService {
       notes: dto.notes ?? null,
       startDate: dto.startDate ?? null,
       targetEndDate: dto.targetEndDate ?? null,
+      ...(dto.projectBoardType !== undefined ? { projectBoardType: dto.projectBoardType } : {}),
     });
     return this.projectRepository.save(project);
   }
@@ -85,6 +86,9 @@ export class ProjectsService {
       }
       if (dto.targetEndDate !== undefined) {
         project.targetEndDate = dto.targetEndDate;
+      }
+      if (dto.projectBoardType !== undefined) {
+        project.projectBoardType = dto.projectBoardType;
       }
       if (isRename) {
         await manager.update(TaskRecord, { projectName: name }, { projectName: dto.name });

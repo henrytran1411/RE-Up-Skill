@@ -1,4 +1,4 @@
-import { ProjectStatus } from './common';
+import { ProjectBoardType, ProjectStatus } from './common';
 
 export interface ProjectSummary {
   projectName: string;
@@ -15,6 +15,8 @@ export interface ProjectSummary {
   totalActualHours: number;
   startDate: string | null;
   targetEndDate: string | null;
+  /** Kanban vs. Agile — Kanban means no Sprint tab. */
+  projectBoardType: ProjectBoardType;
 }
 
 export interface PublicProjectContributor {

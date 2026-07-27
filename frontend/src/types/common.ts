@@ -57,6 +57,12 @@ export enum TaskStatus {
   COMPLETED = 'completed',
 }
 
+/** Kanban vs. Agile (sprint-based) — Kanban hides the Sprint tab. Defaults to AGILE; a Jira sync sets it based on whether the project's issues actually carry Sprint field data. */
+export enum ProjectBoardType {
+  KANBAN = 'kanban',
+  AGILE = 'agile',
+}
+
 export enum LevelHistorySource {
   INITIAL = 'initial',
   AUTO_PROMOTION = 'auto_promotion',

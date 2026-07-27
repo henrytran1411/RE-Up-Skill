@@ -122,6 +122,18 @@ export class TaskRecord {
   @Column({ type: 'uuid', nullable: true })
   projectSprintId: string | null;
 
+  /**
+   * Every ProjectSprint (by id) this task has been assigned to over its
+   * lifetime, oldest first — `projectSprintId` above is just the last entry
+   * here (the current one). Captured from Jira's own multi-entry Sprint
+   * field during sync, since Jira appends to that field every time an
+   * issue rolls over into a new sprint without finishing the last one;
+   * empty for tasks synced with no sprint data, or not Jira-synced at all.
+   * `sprintHistoryIds.length > 1` means the task carried over at least once.
+   */
+  @Column({ type: 'text', nullable: true, transformer: JsonArrayColumnTransformer })
+  sprintHistoryIds: string[];
+
   @CreateDateColumn()
   createdAt: Date;
 

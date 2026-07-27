@@ -52,6 +52,8 @@ export interface TaskRecord {
   blockedByTaskIds: string[];
   /** Which project sprint (see /projects/:name/sprints) this task is assigned to — set manually, not synced from Jira. */
   projectSprintId: string | null;
+  /** Every sprint (by id) this task has ever been assigned to, oldest first — projectSprintId is just the last entry. Populated from Jira's own multi-entry Sprint field during sync; empty for manually-created tasks. length > 1 means it carried over at least once. */
+  sprintHistoryIds: string[];
   /** The Epic this issue ultimately belongs to (that Epic's own jiraIssueKey) — null for the Epic issue itself and for issues with no Epic. */
   epicKey: string | null;
   /** The User Story this Task/Bug/Sub-task's immediate parent is (that Story's own jiraIssueKey) — null for Epics, Stories themselves, and leaves linked directly to an Epic with no Story in between. */

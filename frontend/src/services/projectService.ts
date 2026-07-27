@@ -1,5 +1,6 @@
 import { apiClient } from './apiClient';
 import { ProjectOverview, ProjectSummary, PublicProjectOverview } from '../types/project';
+import { ProjectBoardType } from '../types/common';
 
 export async function fetchAllProjects(): Promise<ProjectSummary[]> {
   const { data } = await apiClient.get<ProjectSummary[]>('/tasks/projects');
@@ -20,6 +21,7 @@ export interface CreateProjectPayload {
   notes?: string;
   startDate?: string;
   targetEndDate?: string;
+  projectBoardType?: ProjectBoardType;
 }
 
 export async function createProject(payload: CreateProjectPayload): Promise<void> {
@@ -34,6 +36,7 @@ export interface UpsertProjectPayload {
   notes?: string;
   startDate?: string;
   targetEndDate?: string;
+  projectBoardType?: ProjectBoardType;
 }
 
 export async function upsertProject(projectName: string, payload: UpsertProjectPayload): Promise<void> {

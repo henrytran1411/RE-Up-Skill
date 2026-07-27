@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
 import { TaskRecord, BlockedByIssueRef } from '../tasks/entities/task-record.entity';
 import { TaskStatus } from '../common/enums/task-status.enum';
+import { ProjectBoardType } from '../common/enums/project-board-type.enum';
 import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
@@ -153,6 +154,8 @@ export interface JiraSyncSummary {
   tasksWithoutAssignee?: number;
   /** Set only by a single-project sync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). See TasksService.resolveBlockedByTaskIdsForProject. */
   blockedByTaskIdsResolved?: number;
+  /** Set only by a single-project sync, when the Sprint field could be resolved — the Project's board type as detected from whether any fetched issue actually carries Sprint data. AGILE hides nothing; KANBAN hides the Sprint tab in the UI. */
+  boardTypeDetected?: ProjectBoardType;
 }
 
 export interface JiraProjectSyncSummary {
@@ -415,21 +418,19 @@ export class JiraService {
   }
 
   /**
-   * An issue can carry several sprints in this field — it's appended to
-   * every time the issue moves to a new sprint without finishing the last
-   * one. Picks the one with the latest startDate rather than trusting the
-   * array's own order, since that's almost always the current/most
-   * relevant sprint for this task regardless of how Jira ordered the list.
+   * Every entry in Jira's own Sprint field, oldest first — Jira appends to
+   * this field every time an issue moves to a new sprint without finishing
+   * the last one, so a carried-over task can carry two or more. Sorted by
+   * startDate rather than trusting the array's own order. The last entry is
+   * the current/most relevant sprint — same choice pickCurrentSprint used
+   * to make on its own before task-level sprint history existed.
    */
-  private pickCurrentSprint(rawValue: unknown): JiraSprintRef | null {
+  private pickAllSprints(rawValue: unknown): JiraSprintRef[] {
     if (!Array.isArray(rawValue) || rawValue.length === 0) {
-      return null;
+      return [];
     }
     const sprints = rawValue as JiraSprintRef[];
-    return sprints.reduce<JiraSprintRef | null>((latest, sprint) => {
-      if (!latest) return sprint;
-      return (sprint.startDate ?? '') > (latest.startDate ?? '') ? sprint : latest;
-    }, null);
+    return [...sprints].sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? ''));
   }
 
   /** The Jira projects currently in scope — every project the account can see when syncAllProjects is on, else just the ones picked on the Admin page. */
@@ -577,7 +578,7 @@ export class JiraService {
     const completedAt = status === TaskStatus.COMPLETED && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
 
     const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, issue.fields.parent?.key ?? null, hierarchy);
-    const jiraSprint = sprintFieldId ? this.pickCurrentSprint(issue.fields[sprintFieldId]) : null;
+    const jiraSprintHistory = sprintFieldId ? this.pickAllSprints(issue.fields[sprintFieldId]) : [];
 
     return {
       taskName: issue.fields.summary,
@@ -595,7 +596,7 @@ export class JiraService {
       blockedByIssues: this.findBlockingIssues(issue),
       epicKey,
       storyKey,
-      jiraSprint,
+      jiraSprintHistory,
     };
   }
 
@@ -755,13 +756,16 @@ export class JiraService {
    * still syncs under the placeholder, so the Task Management hierarchy
    * still gets a parent row for its children to nest under.
    *
-   * When `sprintFieldId` is given and the issue carries a Jira sprint (see
-   * pickCurrentSprint), finds or creates the matching ProjectSprint via
-   * ProjectSprintsService.findOrCreateFromJira and sets the task's
-   * projectSprintId to it — but only for issues that actually sync
-   * (skipped ones never get a sprint created for them). When the issue has
-   * no sprint data, projectSprintId is left untouched on updates, so a
-   * manually-assigned sprint doesn't get silently cleared.
+   * When `sprintFieldId` is given and the issue carries Jira sprint data
+   * (see pickAllSprints), finds or creates a ProjectSprint via
+   * ProjectSprintsService.findOrCreateFromJira for EVERY sprint the issue
+   * has ever been in — not just the current one — and stores the full,
+   * chronologically-ordered list as `sprintHistoryIds`; `projectSprintId`
+   * is set to the last (current) one, same as before. This only happens
+   * for issues that actually sync (skipped ones never get a sprint created
+   * for them). When the issue has no sprint data, both fields are left
+   * untouched on updates, so a manually-assigned sprint doesn't get
+   * silently cleared.
    */
   private async syncOneIssue(
     issue: JiraIssue,
@@ -772,7 +776,7 @@ export class JiraService {
     unassignedPlaceholderEmployeeId: string | null,
   ): Promise<{
     outcome: 'created' | 'updated' | 'skipped';
-    sprintCreated: boolean;
+    sprintsCreated: number;
     sprintAssigned: boolean;
     usedPlaceholder: boolean;
   }> {
@@ -789,7 +793,7 @@ export class JiraService {
         // block the task's own data (and its blockedByIssues) from making it into the system.
         this.recordUnmatched(unmatched, mapped.assigneeAccountId, mapped.assigneeDisplayName);
         if (!unassignedPlaceholderEmployeeId) {
-          return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
+          return { outcome: 'skipped', sprintsCreated: 0, sprintAssigned: false, usedPlaceholder: false };
         }
         employeeId = unassignedPlaceholderEmployeeId;
         usedPlaceholder = true;
@@ -798,19 +802,22 @@ export class JiraService {
       employeeId = unassignedPlaceholderEmployeeId;
       usedPlaceholder = true;
     } else {
-      return { outcome: 'skipped', sprintCreated: false, sprintAssigned: false, usedPlaceholder: false };
+      return { outcome: 'skipped', sprintsCreated: 0, sprintAssigned: false, usedPlaceholder: false };
     }
 
-    let sprintCreated = false;
-    let projectSprintId: string | undefined;
-    if (mapped.jiraSprint) {
+    let sprintsCreated = 0;
+    const sprintHistoryIds: string[] = [];
+    for (const jiraSprint of mapped.jiraSprintHistory) {
       const { sprint, wasCreated } = await this.projectSprintsService.findOrCreateFromJira(
         mapped.projectName,
-        mapped.jiraSprint,
+        jiraSprint,
       );
-      projectSprintId = sprint.id;
-      sprintCreated = wasCreated;
+      sprintHistoryIds.push(sprint.id);
+      if (wasCreated) {
+        sprintsCreated++;
+      }
     }
+    const projectSprintId = sprintHistoryIds.length > 0 ? sprintHistoryIds[sprintHistoryIds.length - 1] : undefined;
 
     const existing = await this.taskRepository.findOne({ where: { jiraIssueKey: issue.key } });
 
@@ -834,17 +841,17 @@ export class JiraService {
       blockedByIssues: mapped.blockedByIssues,
       epicKey: mapped.epicKey,
       storyKey: mapped.storyKey,
-      ...(projectSprintId !== undefined ? { projectSprintId } : {}),
+      ...(projectSprintId !== undefined ? { projectSprintId, sprintHistoryIds } : {}),
     };
 
     if (existing) {
       await this.taskRepository.save(Object.assign(existing, taskFields));
-      return { outcome: 'updated', sprintCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
+      return { outcome: 'updated', sprintsCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
     }
 
     const task = this.taskRepository.create({ ...taskFields, jiraIssueKey: issue.key, createdAt: mapped.createdAt });
     await this.taskRepository.save(task);
-    return { outcome: 'created', sprintCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
+    return { outcome: 'created', sprintsCreated, sprintAssigned: projectSprintId !== undefined, usedPlaceholder };
   }
 
   /**
@@ -872,7 +879,7 @@ export class JiraService {
 
     for (const issue of issues) {
       try {
-        const { outcome, sprintCreated, sprintAssigned, usedPlaceholder } = await this.syncOneIssue(
+        const { outcome, sprintsCreated: sprintsCreatedForIssue, sprintAssigned, usedPlaceholder } = await this.syncOneIssue(
           issue,
           storyPointsField,
           hierarchy,
@@ -887,9 +894,7 @@ export class JiraService {
         } else {
           tasksSkipped++;
         }
-        if (sprintCreated) {
-          sprintsCreated++;
-        }
+        sprintsCreated += sprintsCreatedForIssue;
         if (sprintAssigned) {
           tasksAssignedToSprint++;
         }
@@ -1036,10 +1041,11 @@ export class JiraService {
    * the same run instead of needing a separate manual mapping pass.
    *
    * If the project has Jira sprints defined and an issue is assigned into
-   * one, this also finds-or-creates the matching ProjectSprint (see
-   * ProjectSprintsService.findOrCreateFromJira) and assigns the task to
-   * it — see pickCurrentSprint for how the "current" sprint is chosen when
-   * an issue has moved through more than one.
+   * one, this also finds-or-creates a ProjectSprint (see
+   * ProjectSprintsService.findOrCreateFromJira) for every sprint the issue
+   * has ever been in — see pickAllSprints — assigning the task to the
+   * current (last) one via projectSprintId and keeping the full,
+   * chronological list in sprintHistoryIds.
    *
    * An issue with NO assignee at all in Jira still syncs — under the
    * shared "Unassigned (Jira)" placeholder employee (see
@@ -1114,8 +1120,20 @@ export class JiraService {
       summary.blockedByTaskIdsResolved = await this.tasksService.resolveBlockedByTaskIdsForProject(projectName);
     }
 
+    // Board type is derived from the raw fetch, not from what got persisted — a Kanban board with every
+    // issue skipped (e.g. all unmatched, no placeholder) is still knowably Kanban from the fetched data alone.
+    if (projectName && sprintFieldId) {
+      const hasSprintData = issues.some((issue) => {
+        const raw = issue.fields[sprintFieldId];
+        return Array.isArray(raw) && raw.length > 0;
+      });
+      const boardType = hasSprintData ? ProjectBoardType.AGILE : ProjectBoardType.KANBAN;
+      await this.projectsService.upsertProject(projectName, { projectBoardType: boardType });
+      summary.boardTypeDetected = boardType;
+    }
+
     this.logger.log(
-      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} with no owner mapped, synced anyway under the placeholder), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned, ${summary.blockedByTaskIdsResolved ?? 0} task(s) got blockedByTaskIds resolved`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} with no owner mapped, synced anyway under the placeholder), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned, ${summary.blockedByTaskIdsResolved ?? 0} task(s) got blockedByTaskIds resolved, board type detected: ${summary.boardTypeDetected ?? 'unknown'}`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

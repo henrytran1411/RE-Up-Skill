@@ -1,5 +1,6 @@
 import { apiClient } from './apiClient';
 import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../types/jira';
+import { ProjectBoardType } from '../types/common';
 
 export async function fetchJiraConfig(): Promise<JiraConfigSummary> {
   const { data } = await apiClient.get<JiraConfigSummary>('/jira-sync/config');
@@ -47,6 +48,8 @@ export interface JiraSyncSummary {
   tasksWithoutAssignee?: number;
   /** Set only by runJiraSingleProjectSync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). */
   blockedByTaskIdsResolved?: number;
+  /** Set only by runJiraSingleProjectSync, when the Sprint field could be resolved — the Project's board type as detected from whether any fetched issue actually carries Sprint data. KANBAN hides the Sprint tab. */
+  boardTypeDetected?: ProjectBoardType;
 }
 
 export async function runJiraSync(): Promise<JiraSyncSummary> {

@@ -16,6 +16,7 @@ import { computeTaskScore } from '../evaluations/scoring/scoring.util';
 import { ProjectHealthService, ProjectHealthReport } from './project-health.service';
 import { TaskCriticalPathService, TaskCriticalPathReport } from './task-critical-path.service';
 import { TaskStatus } from '../common/enums/task-status.enum';
+import { ProjectBoardType } from '../common/enums/project-board-type.enum';
 
 /** Standard working hours in a month (8h/day x 20 workdays), used to derive an hourly cost rate from monthly salary. */
 const STANDARD_MONTHLY_HOURS = 160;
@@ -84,6 +85,8 @@ export interface ProjectSummary {
   totalActualHours: number;
   startDate: string | null;
   targetEndDate: string | null;
+  /** Kanban vs. Agile — Kanban means the project has no Sprint tab. */
+  projectBoardType: ProjectBoardType;
 }
 
 export interface PublicProjectContributor {
@@ -556,6 +559,7 @@ export class TasksService {
         totalActualHours: r ? Number(r.totalActualHours) || 0 : 0,
         startDate: project?.startDate ?? null,
         targetEndDate: project?.targetEndDate ?? null,
+        projectBoardType: project?.projectBoardType ?? ProjectBoardType.AGILE,
       };
     });
 
@@ -681,6 +685,7 @@ export class TasksService {
       totalActualHours,
       startDate: project?.startDate ?? null,
       targetEndDate: project?.targetEndDate ?? null,
+      projectBoardType: project?.projectBoardType ?? ProjectBoardType.AGILE,
     };
 
     if (!canViewRoi) {
