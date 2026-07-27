@@ -1,6 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { TaskRecord } from './entities/task-record.entity';
 
+/** One task blocking a critical-path task — not just its critical-chain predecessor, every real blocker. */
+export interface CriticalPathBlocker {
+  id: string;
+  taskCode: string | null;
+  taskName: string;
+  points: number;
+}
+
 export interface CriticalPathTaskNode {
   id: string;
   taskCode: string | null;
@@ -9,6 +17,10 @@ export interface CriticalPathTaskNode {
   epicName: string | null;
   points: number;
   completedAt: string | null;
+  /** Every task that blocks this one, resolved from blockedByTaskIds — a task can be blocked by more than one, but only the longest chain among them determines the critical path itself. */
+  blockers: CriticalPathBlocker[];
+  /** Sum of blockers[].points, for display without the caller having to reduce it. */
+  blockersTotalPoints: number;
 }
 
 export interface NonCriticalEpicGroup {
@@ -99,6 +111,10 @@ export class TaskCriticalPathService {
     const criticalPathIds = new Set(best.path);
     const criticalPath: CriticalPathTaskNode[] = best.path.map((id) => {
       const t = byId.get(id) as TaskRecord;
+      const blockers: CriticalPathBlocker[] = t.blockedByTaskIds
+        .map((blockerId) => byId.get(blockerId))
+        .filter((b): b is TaskRecord => b !== undefined)
+        .map((b) => ({ id: b.id, taskCode: b.taskCode, taskName: b.taskName, points: b.points }));
       return {
         id: t.id,
         taskCode: t.taskCode,
@@ -107,6 +123,8 @@ export class TaskCriticalPathService {
         epicName: t.epicKey ? epicNameByKey.get(t.epicKey) ?? null : null,
         points: t.points,
         completedAt: t.completedAt,
+        blockers,
+        blockersTotalPoints: blockers.reduce((sum, b) => sum + b.points, 0),
       };
     });
 

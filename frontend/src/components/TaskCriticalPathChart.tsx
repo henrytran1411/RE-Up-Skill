@@ -1,5 +1,5 @@
 import { Bar, ComposedChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { CriticalPathTaskNode, NonCriticalEpicGroup } from '../types/projectHealth';
+import { CriticalPathBlocker, CriticalPathTaskNode, NonCriticalEpicGroup } from '../types/projectHealth';
 
 interface ChartRow {
   label: string;
@@ -8,6 +8,9 @@ interface ChartRow {
   linePoints?: number;
   completed?: boolean;
   epicName?: string | null;
+  /** Set only on 'critical' rows — every task blocking this one (can be more than one; only the longest chain among them is what put this task on the critical path). */
+  blockers?: CriticalPathBlocker[];
+  blockersTotalPoints?: number;
   /** Set only on 'epic' rows — total estimate hours of that Epic's non-critical-path tasks, plotted as bars. */
   estimateHours?: number;
   taskCount?: number;
@@ -51,6 +54,19 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: { paylo
             {row.completed ? 'Completed' : 'Not completed'} — {row.linePoints} pts
           </div>
           {row.epicName && <div style={{ color: '#999' }}>Epic: {row.epicName}</div>}
+          {row.blockers && row.blockers.length > 1 && (
+            <div style={{ marginTop: 4, borderTop: '1px solid #eee', paddingTop: 4 }}>
+              <div>Blocked by {row.blockers.length} tasks:</div>
+              <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+                {row.blockers.map((b) => (
+                  <li key={b.id}>
+                    {b.taskCode ?? b.taskName} ({b.points} pts)
+                  </li>
+                ))}
+              </ul>
+              <div style={{ color: '#999' }}>Total: {row.blockersTotalPoints} pts</div>
+            </div>
+          )}
         </>
       ) : (
         <div style={{ color: '#fa8c16' }}>
@@ -86,6 +102,8 @@ export function TaskCriticalPathChart({
       linePoints: t.points,
       completed: t.completedAt !== null,
       epicName: t.epicName,
+      blockers: t.blockers,
+      blockersTotalPoints: t.blockersTotalPoints,
     })),
     ...nonCriticalByEpic.map((e) => ({
       label: e.epicName,

@@ -30,6 +30,14 @@ export interface ProjectHealthReport {
   status: ProjectHealthStatus;
 }
 
+/** One task blocking a critical-path task — not just its critical-chain predecessor, every real blocker. */
+export interface CriticalPathBlocker {
+  id: string;
+  taskCode: string | null;
+  taskName: string;
+  points: number;
+}
+
 export interface CriticalPathTaskNode {
   id: string;
   taskCode: string | null;
@@ -38,6 +46,10 @@ export interface CriticalPathTaskNode {
   epicName: string | null;
   points: number;
   completedAt: string | null;
+  /** Every task that blocks this one — a task can be blocked by more than one, though only the longest chain among them determines the critical path itself. */
+  blockers: CriticalPathBlocker[];
+  /** Sum of blockers[].points. */
+  blockersTotalPoints: number;
 }
 
 export interface NonCriticalEpicGroup {
