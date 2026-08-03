@@ -1,5 +1,5 @@
 import { Layout, Menu, Avatar, Dropdown, Space, Typography } from 'antd';
-import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined, SettingOutlined, IdcardOutlined } from '@ant-design/icons';
+import { DashboardOutlined, TeamOutlined, LogoutOutlined, UserOutlined, ToolOutlined, BookOutlined, AppstoreOutlined, BarChartOutlined, ProjectOutlined, RiseOutlined, FolderOutlined, BulbOutlined, TrophyOutlined, SafetyCertificateOutlined, SettingOutlined, IdcardOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { MANAGER_ROLES, Role } from '../types/common';
@@ -7,6 +7,7 @@ import { MANAGER_ROLES, Role } from '../types/common';
 const { Header, Sider, Content } = Layout;
 
 const SKILL_CATALOG_ROLES: Role[] = [Role.HR, Role.ADMIN, Role.TECH_LEAD];
+const BACKLOG_GENERATOR_ROLES: Role[] = [Role.PM, Role.TECH_LEAD, Role.ADMIN];
 
 export function MainLayout() {
   const { currentEmployee, logout } = useAuth();
@@ -17,6 +18,7 @@ export function MainLayout() {
   const canManageSkillCatalog = currentEmployee ? SKILL_CATALOG_ROLES.includes(currentEmployee.role as Role) : false;
   const isAdmin = currentEmployee?.role === Role.ADMIN;
   const canManageEmployeeCatalogs = currentEmployee?.role === Role.HR || isAdmin;
+  const canGenerateBacklog = currentEmployee ? BACKLOG_GENERATOR_ROLES.includes(currentEmployee.role as Role) : false;
 
   const menuItems = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
@@ -30,6 +32,9 @@ export function MainLayout() {
           { key: '/projects', icon: <ProjectOutlined />, label: 'Projects' },
           { key: '/analytics', icon: <BarChartOutlined />, label: 'Analytics' },
         ]
+      : []),
+    ...(canGenerateBacklog
+      ? [{ key: '/backlog-generator', icon: <ThunderboltOutlined />, label: 'Backlog Generator' }]
       : []),
     ...(canManageSkillCatalog
       ? [

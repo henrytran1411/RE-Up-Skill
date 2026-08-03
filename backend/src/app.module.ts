@@ -13,6 +13,7 @@ import { ContributionModule } from './contribution/contribution.module';
 import { CertificatesModule } from './certificates/certificates.module';
 import { PerformanceModule } from './performance/performance.module';
 import { JiraModule } from './jira/jira.module';
+import { BacklogGeneratorModule } from './backlog-generator/backlog-generator.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -44,6 +45,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     CertificatesModule,
     PerformanceModule,
     JiraModule,
+    BacklogGeneratorModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

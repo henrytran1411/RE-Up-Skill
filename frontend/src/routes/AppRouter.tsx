@@ -16,11 +16,13 @@ import { ContributionRecordsPage } from '../pages/Contribution/ContributionRecor
 import { MyCertificatesPage } from '../pages/Certificates/MyCertificatesPage';
 import { CertificatesPage } from '../pages/Certificates/CertificatesPage';
 import { AdminPage } from '../pages/Admin/AdminPage';
+import { BacklogGeneratorPage } from '../pages/BacklogGenerator/BacklogGeneratorPage';
 import { MainLayout } from '../layouts/MainLayout';
 import { ProtectedRoute } from './ProtectedRoute';
 import { MANAGER_ROLES, Role } from '../types/common';
 
 const SKILL_CATALOG_ROLES = [Role.HR, Role.ADMIN, Role.TECH_LEAD];
+export const BACKLOG_GENERATOR_ROLES = [Role.PM, Role.TECH_LEAD, Role.ADMIN];
 
 export function AppRouter() {
   return (
@@ -41,6 +43,10 @@ export function AppRouter() {
               <Route path="/skills" element={<SkillsManagementPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute allowedRoles={BACKLOG_GENERATOR_ROLES} />}>
+              <Route path="/backlog-generator" element={<BacklogGeneratorPage />} />
             </Route>
 
             <Route element={<ProtectedRoute allowedRoles={[Role.HR, Role.ADMIN]} />}>
