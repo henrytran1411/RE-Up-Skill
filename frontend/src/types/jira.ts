@@ -30,6 +30,29 @@ export interface JiraUserSummary {
   accountType: string;
 }
 
+export const JIRA_ISSUE_TYPES = ['Task', 'Bug', 'Story', 'Epic', 'Sub-task'] as const;
+export type JiraIssueType = (typeof JIRA_ISSUE_TYPES)[number];
+
+export interface CreateJiraIssuePayload {
+  projectKey: string;
+  summary: string;
+  issueType: JiraIssueType;
+  assigneeAccountId?: string;
+  parentKey?: string;
+  storyPoints?: number;
+  description?: string;
+}
+
+/** Outcome of one attempt to create an issue in real Jira — used for both the single-create form and each row of a bulk CSV upload. */
+export interface JiraCreateIssueResult {
+  success: boolean;
+  issueKey: string | null;
+  errorMessage: string | null;
+  input: { projectKey: string; summary: string };
+  /** Set only for bulk CSV rows — the 1-indexed row in the uploaded file (header row is row 1). */
+  rowNumber?: number;
+}
+
 export interface JiraSyncLog {
   id: string;
   startedAt: string;

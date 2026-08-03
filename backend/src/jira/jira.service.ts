@@ -13,6 +13,8 @@ import { ProjectsService } from '../projects/projects.service';
 import { ProjectSprintsService } from '../projects/project-sprints.service';
 import { TaskCodeService } from '../tasks/task-code.service';
 import { TasksService } from '../tasks/tasks.service';
+import { CreateJiraIssueDto, JIRA_ISSUE_TYPES } from './dto/create-jira-issue.dto';
+import { parse as parseCsv } from 'csv-parse/sync';
 
 /**
  * The subset of a Jira REST API v3 `/search/jql` result we actually read.
@@ -164,6 +166,18 @@ export interface JiraProjectSyncSummary {
   projectsCreated: number;
   projectsUpdated: number;
   errorMessage: string | null;
+}
+
+/** Outcome of one attempt to create a single issue in real Jira — used for both the single-create form and each row of a bulk CSV upload. */
+export interface JiraCreateIssueResult {
+  success: boolean;
+  /** The new issue's key (e.g. "ABC-123"), set only on success. */
+  issueKey: string | null;
+  errorMessage: string | null;
+  /** Echoes what was attempted, so a bulk result list is still readable without cross-referencing the input file. */
+  input: { projectKey: string; summary: string };
+  /** Set only for bulk CSV rows — the 1-indexed row in the uploaded file (header row is row 1), for matching a failure back to the file. */
+  rowNumber?: number;
 }
 
 /** Priority has no universal numeric scale in Jira — this is a judgment-call mapping, not a Jira standard. */
@@ -1212,6 +1226,115 @@ export class JiraService {
       `Jira project sync ${summary.status}: ${projects.length} fetched, ${projectsCreated} created, ${projectsUpdated} updated`,
     );
     return summary;
+  }
+
+  /** Creates one brand-new issue in real Jira — this is a live, visible write, unlike every other method in this service. */
+  async createIssue(dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before creating issues.');
+    }
+    return this.createIssueWithConnection(connection, dto);
+  }
+
+  /** Creates one issue per row, in order, continuing past a row that fails so one bad row doesn't sink the whole batch. */
+  async createIssuesBulk(dtos: (CreateJiraIssueDto & { rowNumber?: number })[]): Promise<JiraCreateIssueResult[]> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before creating issues.');
+    }
+    const results: JiraCreateIssueResult[] = [];
+    for (const dto of dtos) {
+      const result = await this.createIssueWithConnection(connection, dto);
+      results.push(dto.rowNumber !== undefined ? { ...result, rowNumber: dto.rowNumber } : result);
+    }
+    return results;
+  }
+
+  private async createIssueWithConnection(connection: JiraConnection, dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
+    const input = { projectKey: dto.projectKey, summary: dto.summary };
+    if (!dto.projectKey || !dto.summary) {
+      return { success: false, issueKey: null, errorMessage: 'Missing required field: projectKey and summary are both required.', input };
+    }
+
+    const fields: Record<string, unknown> = {
+      project: { key: dto.projectKey },
+      summary: dto.summary,
+      issuetype: { name: dto.issueType },
+    };
+    if (dto.description) {
+      fields.description = {
+        type: 'doc',
+        version: 1,
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: dto.description }] }],
+      };
+    }
+    if (dto.assigneeAccountId) {
+      fields.assignee = { id: dto.assigneeAccountId };
+    }
+    if (dto.parentKey) {
+      // Always accepted for Sub-task; on Story/Task this only works on team-managed ("next-gen") Jira projects —
+      // company-managed projects link an Epic via a separate custom "Epic Link" field this service doesn't resolve.
+      fields.parent = { key: dto.parentKey };
+    }
+    if (dto.storyPoints !== undefined) {
+      fields[connection.storyPointsField] = dto.storyPoints;
+    }
+
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    try {
+      const response = await fetch(`${baseUrl}/rest/api/3/issue`, {
+        method: 'POST',
+        headers: {
+          Authorization: this.authHeader(connection),
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fields }),
+      });
+      if (!response.ok) {
+        return { success: false, issueKey: null, errorMessage: `Jira create failed (${response.status}): ${await response.text()}`, input };
+      }
+      const created = (await response.json()) as { key: string };
+      this.logger.log(`Created Jira issue ${created.key} in project ${dto.projectKey}`);
+      return { success: true, issueKey: created.key, errorMessage: null, input };
+    } catch (err) {
+      return { success: false, issueKey: null, errorMessage: err instanceof Error ? err.message : 'Unknown error creating the issue', input };
+    }
+  }
+
+  /**
+   * Parses a bulk-upload CSV into per-row CreateJiraIssueDtos, all created in
+   * the single `projectKey` picked on the Admin page — the file itself has no
+   * per-row project column. Expected header row:
+   * summary,issueType,assigneeAccountId,parentKey,storyPoints,description
+   * — only summary/issueType are required; the rest may be blank. issueType
+   * is matched case-insensitively against JIRA_ISSUE_TYPES and falls back to
+   * "Task" if blank or unrecognized.
+   */
+  parseCreateIssuesCsv(csvText: string, projectKey: string): (CreateJiraIssueDto & { rowNumber: number })[] {
+    let records: Record<string, string>[];
+    try {
+      records = parseCsv(csvText, { columns: true, skip_empty_lines: true, trim: true }) as Record<string, string>[];
+    } catch (err) {
+      throw new BadRequestException(`Could not parse the CSV file: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+
+    return records.map((record, index) => {
+      const issueTypeRaw = (record.issueType ?? '').trim();
+      const issueType = JIRA_ISSUE_TYPES.find((t) => t.toLowerCase() === issueTypeRaw.toLowerCase()) ?? 'Task';
+      const storyPoints = record.storyPoints?.trim() ? Number(record.storyPoints) : undefined;
+      return {
+        rowNumber: index + 2, // +1 for the header row, +1 to make it 1-indexed
+        projectKey,
+        summary: (record.summary ?? '').trim(),
+        issueType,
+        assigneeAccountId: record.assigneeAccountId?.trim() || undefined,
+        parentKey: record.parentKey?.trim() || undefined,
+        storyPoints: storyPoints !== undefined && !Number.isNaN(storyPoints) ? storyPoints : undefined,
+        description: record.description?.trim() || undefined,
+      };
+    });
   }
 
   private async saveLog(startedAt: Date, summary: JiraSyncSummary): Promise<void> {

@@ -16,10 +16,21 @@ import {
   DatePicker,
   message,
   Progress,
+  Divider,
+  InputNumber,
+  Upload,
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
-import { CloudSyncOutlined, LinkOutlined, FolderOutlined, PlusOutlined, ApartmentOutlined } from '@ant-design/icons';
+import {
+  CloudSyncOutlined,
+  LinkOutlined,
+  FolderOutlined,
+  PlusOutlined,
+  ApartmentOutlined,
+  UploadOutlined,
+  FileAddOutlined,
+} from '@ant-design/icons';
 import {
   fetchJiraConfig,
   upsertJiraConfig,
@@ -29,6 +40,8 @@ import {
   runJiraProjectSync,
   fetchJiraSyncLogs,
   fetchJiraUsers,
+  createJiraIssue,
+  createJiraIssuesBulk,
   JiraSyncSummary,
 } from '../../services/jiraService';
 import { fetchAllEmployees, createEmployee } from '../../services/employeeService';
@@ -36,7 +49,15 @@ import { fetchAllEmployeeLevels } from '../../services/employeeLevelService';
 import { fetchAllEmployeeRoles } from '../../services/employeeRoleService';
 import { fetchAllProjects } from '../../services/projectService';
 import { fetchTasksForProject } from '../../services/taskService';
-import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../../types/jira';
+import {
+  JIRA_ISSUE_TYPES,
+  JiraConfigSummary,
+  JiraCreateIssueResult,
+  JiraProjectSummary,
+  JiraProjectSyncSummary,
+  JiraSyncLog,
+  JiraUserSummary,
+} from '../../types/jira';
 import { Employee } from '../../types/employee';
 import { EmployeeLevel } from '../../types/employeeLevel';
 import { EmployeeRole } from '../../types/employeeRole';
@@ -107,6 +128,14 @@ export function AdminPage() {
   const [singleProjectKey, setSingleProjectKey] = useState<string | undefined>(undefined);
   const [syncingSingleProject, setSyncingSingleProject] = useState(false);
   const [singleProjectSyncResult, setSingleProjectSyncResult] = useState<JiraSyncSummary | null>(null);
+
+  const [createIssueForm] = Form.useForm();
+  const [creatingIssue, setCreatingIssue] = useState(false);
+  const [createIssueResult, setCreateIssueResult] = useState<JiraCreateIssueResult | null>(null);
+  const [bulkProjectKey, setBulkProjectKey] = useState<string | undefined>(undefined);
+  const [bulkFile, setBulkFile] = useState<File | null>(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResults, setBulkResults] = useState<JiraCreateIssueResult[] | null>(null);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [jiraUsers, setJiraUsers] = useState<JiraUserSummary[]>([]);
@@ -286,6 +315,62 @@ export function AdminPage() {
     } finally {
       setSyncingSingleProject(false);
     }
+  };
+
+  const handleCreateIssue = async () => {
+    const values = await createIssueForm.validateFields();
+    setCreatingIssue(true);
+    setCreateIssueResult(null);
+    try {
+      const result = await createJiraIssue({
+        projectKey: values.projectKey,
+        summary: values.summary,
+        issueType: values.issueType,
+        assigneeAccountId: values.assigneeAccountId || undefined,
+        parentKey: values.parentKey || undefined,
+        storyPoints: values.storyPoints ?? undefined,
+        description: values.description || undefined,
+      });
+      setCreateIssueResult(result);
+      if (result.success) {
+        message.success(`Created ${result.issueKey} in Jira`);
+        createIssueForm.resetFields(['summary', 'description', 'parentKey', 'storyPoints']);
+      } else {
+        message.error(result.errorMessage ?? 'Failed to create the issue');
+      }
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to create the issue'));
+    } finally {
+      setCreatingIssue(false);
+    }
+  };
+
+  const handleBulkCreateIssues = async () => {
+    if (!bulkFile || !bulkProjectKey) return;
+    setBulkUploading(true);
+    setBulkResults(null);
+    try {
+      const results = await createJiraIssuesBulk(bulkProjectKey, bulkFile);
+      setBulkResults(results);
+      const successCount = results.filter((r) => r.success).length;
+      message.success(`Created ${successCount} / ${results.length} issue(s) from the file`);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to bulk-create issues'));
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
+  const downloadBulkCreateTemplate = () => {
+    const csv =
+      'summary,issueType,assigneeAccountId,parentKey,storyPoints,description\n' +
+      'Example task summary,Task,,,3,Optional description';
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'jira-bulk-create-template.csv';
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const openCreateModal = (user: JiraUserSummary) => {
@@ -504,6 +589,150 @@ export function AdminPage() {
                     )}
                   </Space>
                 }
+              />
+            )}
+
+            <Typography.Title level={5} style={{ marginTop: 24 }}>
+              Create Task in Jira
+            </Typography.Title>
+            <Typography.Paragraph type="secondary">
+              Creates a real issue directly on the team's Jira board — a live, visible write, not a local record.
+              Run "Sync One Project" above afterward to pull it into this system.
+            </Typography.Paragraph>
+
+            <Typography.Text strong>Single task</Typography.Text>
+            <Form form={createIssueForm} layout="vertical" style={{ marginTop: 8 }}>
+              <Space style={{ width: '100%' }} wrap align="start">
+                <Form.Item
+                  name="projectKey"
+                  label="Project"
+                  rules={[{ required: true, message: 'Required' }]}
+                  style={{ minWidth: 240 }}
+                >
+                  <Select
+                    showSearch
+                    placeholder="Select a Jira project"
+                    options={projects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+                    optionFilterProp="label"
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="issueType"
+                  label="Issue type"
+                  rules={[{ required: true, message: 'Required' }]}
+                  initialValue="Task"
+                  style={{ minWidth: 160 }}
+                >
+                  <Select options={JIRA_ISSUE_TYPES.map((t) => ({ value: t, label: t }))} />
+                </Form.Item>
+                <Form.Item name="storyPoints" label="Story points" style={{ minWidth: 120 }}>
+                  <InputNumber min={0} style={{ width: '100%' }} />
+                </Form.Item>
+              </Space>
+              <Form.Item name="summary" label="Summary" rules={[{ required: true, message: 'Required' }]}>
+                <Input placeholder="Short issue title" />
+              </Form.Item>
+              <Space style={{ width: '100%' }} wrap align="start">
+                <Form.Item name="assigneeAccountId" label="Assignee" style={{ minWidth: 240 }}>
+                  <Select
+                    allowClear
+                    showSearch
+                    placeholder="Unassigned"
+                    options={jiraUsers
+                      .filter((u) => u.active)
+                      .map((u) => ({ value: u.accountId, label: stripCodePrefix(u.displayName) }))}
+                    optionFilterProp="label"
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="parentKey"
+                  label="Parent (Epic/Story key)"
+                  style={{ minWidth: 200 }}
+                  extra="Sub-task always supported; Story/Task only nests under an Epic on team-managed projects"
+                >
+                  <Input placeholder="e.g. ABC-12" />
+                </Form.Item>
+              </Space>
+              <Form.Item name="description" label="Description">
+                <Input.TextArea rows={2} placeholder="Optional" />
+              </Form.Item>
+              <Button type="primary" icon={<PlusOutlined />} loading={creatingIssue} onClick={handleCreateIssue}>
+                Create in Jira
+              </Button>
+            </Form>
+            {createIssueResult && (
+              <Alert
+                style={{ marginTop: 12 }}
+                type={createIssueResult.success ? 'success' : 'error'}
+                showIcon
+                message={
+                  createIssueResult.success
+                    ? `Created ${createIssueResult.issueKey} in ${createIssueResult.input.projectKey}`
+                    : `Failed: ${createIssueResult.errorMessage}`
+                }
+              />
+            )}
+
+            <Divider />
+
+            <Typography.Text strong>Bulk, from a CSV file</Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4 }}>
+              Every row is created in the one project picked below — the file itself has no project column. Columns:{' '}
+              <code>summary,issueType,assigneeAccountId,parentKey,storyPoints,description</code> — only{' '}
+              <code>summary</code> and <code>issueType</code> are required. Rows are created one at a time; a failed
+              row doesn't stop the rest.
+            </Typography.Paragraph>
+            <Space wrap align="start">
+              <Select
+                showSearch
+                placeholder="Select a Jira project"
+                style={{ width: 240 }}
+                value={bulkProjectKey}
+                onChange={setBulkProjectKey}
+                options={projects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+                optionFilterProp="label"
+              />
+              <Button icon={<FileAddOutlined />} onClick={downloadBulkCreateTemplate}>
+                Download CSV template
+              </Button>
+              <Upload
+                accept=".csv"
+                maxCount={1}
+                fileList={bulkFile ? [{ uid: '1', name: bulkFile.name }] : []}
+                beforeUpload={(file) => {
+                  setBulkFile(file);
+                  return false;
+                }}
+                onRemove={() => setBulkFile(null)}
+              >
+                <Button icon={<UploadOutlined />}>Choose CSV file</Button>
+              </Upload>
+              <Button
+                type="primary"
+                icon={<CloudSyncOutlined />}
+                loading={bulkUploading}
+                disabled={!bulkFile || !bulkProjectKey}
+                onClick={handleBulkCreateIssues}
+              >
+                Create Issues From File
+              </Button>
+            </Space>
+            {bulkResults && (
+              <Table
+                style={{ marginTop: 12 }}
+                rowKey={(_r, i) => String(i)}
+                size="small"
+                pagination={false}
+                dataSource={bulkResults}
+                columns={[
+                  { title: 'Row', dataIndex: 'rowNumber' },
+                  { title: 'Summary', render: (_, r: JiraCreateIssueResult) => r.input.summary },
+                  {
+                    title: 'Result',
+                    render: (_, r: JiraCreateIssueResult) =>
+                      r.success ? <Tag color="green">{r.issueKey}</Tag> : <Tag color="red">{r.errorMessage}</Tag>,
+                  },
+                ]}
               />
             )}
           </>

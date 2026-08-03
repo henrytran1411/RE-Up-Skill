@@ -1,8 +1,21 @@
-import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Put, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JiraService } from './jira.service';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
+import { CreateJiraIssueDto } from './dto/create-jira-issue.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
+
+const CSV_UPLOAD_OPTIONS = {
+  limits: { fileSize: 1 * 1024 * 1024 },
+  fileFilter: (_req: unknown, file: Express.Multer.File, callback: (error: Error | null, accept: boolean) => void) => {
+    if (!file.originalname.toLowerCase().endsWith('.csv') && file.mimetype !== 'text/csv') {
+      callback(new BadRequestException('Only .csv files are allowed'), false);
+      return;
+    }
+    callback(null, true);
+  },
+};
 
 @Controller('jira-sync')
 @Roles(Role.ADMIN)
@@ -59,5 +72,31 @@ export class JiraController {
   @Get('logs')
   findLogs() {
     return this.jiraService.findRecentLogs();
+  }
+
+  /** Creates one brand-new issue directly in real Jira — a live, visible write, unlike every read above. */
+  @Post('create-issue')
+  createIssue(@Body() dto: CreateJiraIssueDto) {
+    return this.jiraService.createIssue(dto);
+  }
+
+  /**
+   * Bulk-creates issues, all in one Jira project (picked on the Admin page,
+   * not per-row), from an uploaded CSV (columns:
+   * summary,issueType,assigneeAccountId,parentKey,storyPoints,description).
+   * Runs row by row so one bad row doesn't sink the whole batch — check each
+   * result's success/errorMessage rather than assuming an all-or-nothing outcome.
+   */
+  @Post('create-issues-bulk')
+  @UseInterceptors(FileInterceptor('file', CSV_UPLOAD_OPTIONS))
+  createIssuesBulk(@UploadedFile() file: Express.Multer.File, @Body('projectKey') projectKey: string) {
+    if (!file) {
+      throw new BadRequestException('A .csv file is required');
+    }
+    if (!projectKey) {
+      throw new BadRequestException('A project is required');
+    }
+    const dtos = this.jiraService.parseCreateIssuesCsv(file.buffer.toString('utf-8'), projectKey);
+    return this.jiraService.createIssuesBulk(dtos);
   }
 }

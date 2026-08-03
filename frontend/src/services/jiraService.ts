@@ -1,5 +1,13 @@
 import { apiClient } from './apiClient';
-import { JiraConfigSummary, JiraProjectSummary, JiraProjectSyncSummary, JiraSyncLog, JiraUserSummary } from '../types/jira';
+import {
+  CreateJiraIssuePayload,
+  JiraConfigSummary,
+  JiraCreateIssueResult,
+  JiraProjectSummary,
+  JiraProjectSyncSummary,
+  JiraSyncLog,
+  JiraUserSummary,
+} from '../types/jira';
 import { ProjectBoardType } from '../types/common';
 
 export async function fetchJiraConfig(): Promise<JiraConfigSummary> {
@@ -75,5 +83,22 @@ export async function fetchJiraSyncLogs(): Promise<JiraSyncLog[]> {
 
 export async function fetchJiraUsers(): Promise<JiraUserSummary[]> {
   const { data } = await apiClient.get<JiraUserSummary[]>('/jira-sync/users');
+  return data;
+}
+
+/** Creates one brand-new issue directly in real Jira — a live, visible write, unlike every read above. */
+export async function createJiraIssue(payload: CreateJiraIssuePayload): Promise<JiraCreateIssueResult> {
+  const { data } = await apiClient.post<JiraCreateIssueResult>('/jira-sync/create-issue', payload);
+  return data;
+}
+
+/** Bulk-creates issues, all in the given project, from a CSV file (columns: summary,issueType,assigneeAccountId,parentKey,storyPoints,description). */
+export async function createJiraIssuesBulk(projectKey: string, file: File): Promise<JiraCreateIssueResult[]> {
+  const formData = new FormData();
+  formData.append('projectKey', projectKey);
+  formData.append('file', file);
+  const { data } = await apiClient.post<JiraCreateIssueResult[]>('/jira-sync/create-issues-bulk', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
   return data;
 }
