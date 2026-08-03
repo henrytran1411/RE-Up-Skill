@@ -3,6 +3,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { JiraService } from './jira.service';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
 import { CreateJiraIssueDto } from './dto/create-jira-issue.dto';
+import { PushProjectToJiraDto } from './dto/push-project-to-jira.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 
@@ -98,5 +99,11 @@ export class JiraController {
     }
     const dtos = this.jiraService.parseCreateIssuesCsv(file.buffer.toString('utf-8'), projectKey);
     return this.jiraService.createIssuesBulk(dtos);
+  }
+
+  /** Pushes every task in a local Project that isn't already in Jira into the given Jira project as real issues — a live, visible write. */
+  @Post('push-project')
+  pushProject(@Body() dto: PushProjectToJiraDto) {
+    return this.jiraService.pushProjectTasksToJira(dto.projectName, dto.jiraProjectKey);
   }
 }

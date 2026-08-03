@@ -180,6 +180,26 @@ export interface JiraCreateIssueResult {
   rowNumber?: number;
 }
 
+/** One TaskRecord's outcome when pushing a whole local project to Jira. */
+export interface JiraProjectPushRow {
+  taskCode: string | null;
+  taskName: string;
+  issueType: string | null;
+  outcome: 'pushed' | 'already_in_jira' | 'failed' | 'skipped_parent_failed';
+  jiraIssueKey: string | null;
+  errorMessage: string | null;
+}
+
+export interface JiraProjectPushSummary {
+  projectName: string;
+  jiraProjectKey: string;
+  totalTasks: number;
+  pushed: number;
+  alreadyInJira: number;
+  failed: number;
+  rows: JiraProjectPushRow[];
+}
+
 /** Priority has no universal numeric scale in Jira — this is a judgment-call mapping, not a Jira standard. */
 const PRIORITY_TO_COMPLEXITY: Record<string, number> = {
   Highest: 5,
@@ -1335,6 +1355,166 @@ export class JiraService {
         description: record.description?.trim() || undefined,
       };
     });
+  }
+
+  /**
+   * Pushes every task in a local Project that doesn't already have a real
+   * Jira presence — `jiraIssueKey` is null (never synced/pushed) or starts
+   * with `GEN-` (this project's own synthetic key from the Backlog
+   * Generator, see BacklogGeneratorService) — into `jiraProjectKey` as real
+   * issues. A task with a genuine (non-`GEN-`) jiraIssueKey is left alone
+   * and reported as already-in-Jira, so re-running this is safe.
+   *
+   * Processes Epics, then Stories, then everything else, since a child's
+   * Jira `parent` must already exist. On success, both the pushed row's own
+   * jiraIssueKey and every sibling's epicKey/storyKey that pointed at its
+   * OLD key are updated to the new real one — otherwise this project's own
+   * Task Management tree (which matches epicKey/storyKey against the
+   * parent's jiraIssueKey, see buildTaskHierarchy) would break the moment
+   * the parent's key changed. If a parent fails to push, its children are
+   * skipped rather than sent to Jira with a dangling parent reference.
+   */
+  async pushProjectTasksToJira(projectName: string, jiraProjectKey: string): Promise<JiraProjectPushSummary> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before pushing tasks to Jira.');
+    }
+
+    const rows = await this.taskRepository.find({ where: { projectName } });
+    if (rows.length === 0) {
+      throw new BadRequestException(`No tasks found for project "${projectName}".`);
+    }
+
+    const jiraAccountIdByEmployeeId = await this.employeesService.findJiraAccountIdsByIds(
+      Array.from(new Set(rows.map((r) => r.employeeId))),
+    );
+
+    const needsPush = (r: TaskRecord): boolean => r.jiraIssueKey === null || r.jiraIssueKey.startsWith('GEN-');
+    const resultRows: JiraProjectPushRow[] = [];
+    const failedOldKeys = new Set<string>();
+    let pushed = 0;
+    let alreadyInJira = 0;
+    let failed = 0;
+
+    const remapChildren = (oldKey: string | null, newKey: string, field: 'epicKey' | 'storyKey') => {
+      if (oldKey === null) {
+        return;
+      }
+      for (const r of rows) {
+        if (r[field] === oldKey) {
+          r[field] = newKey;
+        }
+      }
+    };
+
+    const push = async (
+      row: TaskRecord,
+      issueType: (typeof JIRA_ISSUE_TYPES)[number],
+      parentKey: string | null,
+    ): Promise<string | null> => {
+      if (!needsPush(row)) {
+        alreadyInJira += 1;
+        resultRows.push({
+          taskCode: row.taskCode,
+          taskName: row.taskName,
+          issueType: row.issueType,
+          outcome: 'already_in_jira',
+          jiraIssueKey: row.jiraIssueKey,
+          errorMessage: null,
+        });
+        return row.jiraIssueKey;
+      }
+      if (parentKey !== null && failedOldKeys.has(parentKey)) {
+        failed += 1;
+        resultRows.push({
+          taskCode: row.taskCode,
+          taskName: row.taskName,
+          issueType: row.issueType,
+          outcome: 'skipped_parent_failed',
+          jiraIssueKey: null,
+          errorMessage: 'Skipped — its parent Epic/Story failed to push.',
+        });
+        return null;
+      }
+
+      const oldKey = row.jiraIssueKey;
+      const result = await this.createIssueWithConnection(connection, {
+        projectKey: jiraProjectKey,
+        summary: row.taskName,
+        issueType,
+        parentKey: parentKey ?? undefined,
+        assigneeAccountId: jiraAccountIdByEmployeeId.get(row.employeeId) ?? undefined,
+        storyPoints: row.points > 0 ? row.points : undefined,
+      });
+
+      if (result.success && result.issueKey) {
+        row.jiraIssueKey = result.issueKey;
+        pushed += 1;
+        resultRows.push({
+          taskCode: row.taskCode,
+          taskName: row.taskName,
+          issueType: row.issueType,
+          outcome: 'pushed',
+          jiraIssueKey: result.issueKey,
+          errorMessage: null,
+        });
+        return result.issueKey;
+      }
+
+      failed += 1;
+      if (oldKey !== null) {
+        failedOldKeys.add(oldKey);
+      }
+      resultRows.push({
+        taskCode: row.taskCode,
+        taskName: row.taskName,
+        issueType: row.issueType,
+        outcome: 'failed',
+        jiraIssueKey: null,
+        errorMessage: result.errorMessage,
+      });
+      return null;
+    };
+
+    for (const epic of rows.filter((r) => r.issueType === 'Epic')) {
+      const oldKey = epic.jiraIssueKey;
+      const newKey = await push(epic, 'Epic', null);
+      if (newKey) {
+        remapChildren(oldKey, newKey, 'epicKey');
+      }
+    }
+
+    for (const story of rows.filter((r) => r.issueType === 'Story')) {
+      const oldKey = story.jiraIssueKey;
+      const newKey = await push(story, 'Story', story.epicKey);
+      if (newKey) {
+        remapChildren(oldKey, newKey, 'storyKey');
+      }
+    }
+
+    for (const leaf of rows.filter((r) => r.issueType !== 'Epic' && r.issueType !== 'Story')) {
+      const issueType =
+        leaf.issueType && (JIRA_ISSUE_TYPES as readonly string[]).includes(leaf.issueType)
+          ? (leaf.issueType as (typeof JIRA_ISSUE_TYPES)[number])
+          : 'Task';
+      await push(leaf, issueType, leaf.storyKey ?? leaf.epicKey);
+    }
+
+    await this.taskRepository.save(rows);
+
+    this.logger.log(
+      `Pushed project "${projectName}" to Jira project ${jiraProjectKey}: ${pushed} pushed, ${alreadyInJira} already in Jira, ${failed} failed`,
+    );
+
+    return {
+      projectName,
+      jiraProjectKey,
+      totalTasks: rows.length,
+      pushed,
+      alreadyInJira,
+      failed,
+      rows: resultRows,
+    };
   }
 
   private async saveLog(startedAt: Date, summary: JiraSyncSummary): Promise<void> {

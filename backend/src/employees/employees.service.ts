@@ -265,6 +265,18 @@ export class EmployeesService {
     return new Map(rows.map((r) => [r.id, r.fullName]));
   }
 
+  /** Jira account ids for a batch of employees — used to set the assignee when pushing local tasks to Jira. Null where an employee has no mapped Jira account. */
+  async findJiraAccountIdsByIds(ids: string[]): Promise<Map<string, string | null>> {
+    if (ids.length === 0) {
+      return new Map();
+    }
+    const rows = await this.employeeRepository.find({
+      where: { id: In(ids) },
+      select: { id: true, jiraAccountId: true },
+    });
+    return new Map(rows.map((r) => [r.id, r.jiraAccountId]));
+  }
+
   async remove(id: string): Promise<void> {
     const employee = await this.findOne(id);
     await this.employeeRepository.remove(employee);

@@ -53,6 +53,26 @@ export interface JiraCreateIssueResult {
   rowNumber?: number;
 }
 
+/** One local task's outcome when pushing a whole project to Jira. */
+export interface JiraProjectPushRow {
+  taskCode: string | null;
+  taskName: string;
+  issueType: string | null;
+  outcome: 'pushed' | 'already_in_jira' | 'failed' | 'skipped_parent_failed';
+  jiraIssueKey: string | null;
+  errorMessage: string | null;
+}
+
+export interface JiraProjectPushSummary {
+  projectName: string;
+  jiraProjectKey: string;
+  totalTasks: number;
+  pushed: number;
+  alreadyInJira: number;
+  failed: number;
+  rows: JiraProjectPushRow[];
+}
+
 export interface JiraSyncLog {
   id: string;
   startedAt: string;

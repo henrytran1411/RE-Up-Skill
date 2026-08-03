@@ -3,6 +3,7 @@ import {
   CreateJiraIssuePayload,
   JiraConfigSummary,
   JiraCreateIssueResult,
+  JiraProjectPushSummary,
   JiraProjectSummary,
   JiraProjectSyncSummary,
   JiraSyncLog,
@@ -100,5 +101,11 @@ export async function createJiraIssuesBulk(projectKey: string, file: File): Prom
   const { data } = await apiClient.post<JiraCreateIssueResult[]>('/jira-sync/create-issues-bulk', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+  return data;
+}
+
+/** Pushes every task in a local Project that isn't already in Jira into jiraProjectKey as real issues — a live, visible write. */
+export async function pushProjectToJira(projectName: string, jiraProjectKey: string): Promise<JiraProjectPushSummary> {
+  const { data } = await apiClient.post<JiraProjectPushSummary>('/jira-sync/push-project', { projectName, jiraProjectKey });
   return data;
 }

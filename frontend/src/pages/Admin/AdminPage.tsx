@@ -42,6 +42,7 @@ import {
   fetchJiraUsers,
   createJiraIssue,
   createJiraIssuesBulk,
+  pushProjectToJira,
   JiraSyncSummary,
 } from '../../services/jiraService';
 import { fetchAllEmployees, createEmployee } from '../../services/employeeService';
@@ -53,6 +54,8 @@ import {
   JIRA_ISSUE_TYPES,
   JiraConfigSummary,
   JiraCreateIssueResult,
+  JiraProjectPushRow,
+  JiraProjectPushSummary,
   JiraProjectSummary,
   JiraProjectSyncSummary,
   JiraSyncLog,
@@ -136,6 +139,11 @@ export function AdminPage() {
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkResults, setBulkResults] = useState<JiraCreateIssueResult[] | null>(null);
+
+  const [pushLocalProjectName, setPushLocalProjectName] = useState<string | undefined>(undefined);
+  const [pushTargetJiraKey, setPushTargetJiraKey] = useState<string | undefined>(undefined);
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<JiraProjectPushSummary | null>(null);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [jiraUsers, setJiraUsers] = useState<JiraUserSummary[]>([]);
@@ -358,6 +366,21 @@ export function AdminPage() {
       message.error(errorMessage(err, 'Failed to bulk-create issues'));
     } finally {
       setBulkUploading(false);
+    }
+  };
+
+  const handlePushProjectToJira = async () => {
+    if (!pushLocalProjectName || !pushTargetJiraKey) return;
+    setPushing(true);
+    setPushResult(null);
+    try {
+      const result = await pushProjectToJira(pushLocalProjectName, pushTargetJiraKey);
+      setPushResult(result);
+      message.success(`Pushed ${result.pushed} / ${result.totalTasks} task(s) to Jira project ${result.jiraProjectKey}`);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to push tasks to Jira'));
+    } finally {
+      setPushing(false);
     }
   };
 
@@ -734,6 +757,82 @@ export function AdminPage() {
                   },
                 ]}
               />
+            )}
+
+            <Divider />
+
+            <Typography.Title level={5}>Push Project to Jira</Typography.Title>
+            <Typography.Paragraph type="secondary">
+              Pushes every task in a project from this system — Epics, User Stories, Tasks, Bugs, Sub-tasks — into a
+              Jira project as real issues, preserving the Epic → Story → Task hierarchy (a task's Jira parent is set
+              to its already-pushed Epic/Story). A task that already has a real Jira issue — e.g. it was originally
+              synced from Jira — is left alone and reported as already in Jira, so this is safe to run more than
+              once.
+            </Typography.Paragraph>
+            <Space wrap align="start">
+              <Select
+                showSearch
+                placeholder="Project in this system"
+                style={{ width: 260 }}
+                value={pushLocalProjectName}
+                onChange={setPushLocalProjectName}
+                options={hierarchyProjects.map((p) => ({ value: p.projectName, label: p.projectName }))}
+                optionFilterProp="label"
+              />
+              <Select
+                showSearch
+                placeholder="Target Jira project"
+                style={{ width: 260 }}
+                value={pushTargetJiraKey}
+                onChange={setPushTargetJiraKey}
+                options={projects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+                optionFilterProp="label"
+              />
+              <Button
+                type="primary"
+                icon={<CloudSyncOutlined />}
+                loading={pushing}
+                disabled={!pushLocalProjectName || !pushTargetJiraKey}
+                onClick={handlePushProjectToJira}
+              >
+                Push Tasks to Jira
+              </Button>
+            </Space>
+            {pushResult && (
+              <>
+                <Alert
+                  style={{ marginTop: 12 }}
+                  type={pushResult.failed > 0 ? 'warning' : 'success'}
+                  showIcon
+                  message={`${pushResult.pushed} pushed, ${pushResult.alreadyInJira} already in Jira, ${pushResult.failed} failed (${pushResult.totalTasks} total tasks in "${pushResult.projectName}")`}
+                />
+                <Table
+                  style={{ marginTop: 12 }}
+                  rowKey={(_r, i) => String(i)}
+                  size="small"
+                  pagination={{ pageSize: 10 }}
+                  dataSource={pushResult.rows}
+                  columns={[
+                    { title: 'Task', render: (_, r: JiraProjectPushRow) => r.taskCode ?? r.taskName },
+                    { title: 'Type', render: (_, r: JiraProjectPushRow) => r.issueType ?? '—' },
+                    {
+                      title: 'Result',
+                      render: (_, r: JiraProjectPushRow) => {
+                        if (r.outcome === 'pushed') {
+                          return <Tag color="green">Pushed: {r.jiraIssueKey}</Tag>;
+                        }
+                        if (r.outcome === 'already_in_jira') {
+                          return <Tag color="blue">Already in Jira: {r.jiraIssueKey}</Tag>;
+                        }
+                        if (r.outcome === 'skipped_parent_failed') {
+                          return <Tag>Skipped (parent failed)</Tag>;
+                        }
+                        return <Tag color="red">{r.errorMessage}</Tag>;
+                      },
+                    },
+                  ]}
+                />
+              </>
             )}
           </>
         )}
