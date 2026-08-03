@@ -1,5 +1,8 @@
-import { Space, Statistic, Row, Col, Tag, Table, Progress, Alert } from 'antd';
+import { useState } from 'react';
+import { Space, Statistic, Row, Col, Tag, Table, Progress, Alert, Button } from 'antd';
+import { InfoCircleOutlined } from '@ant-design/icons';
 import { TaskCriticalPathChart } from './TaskCriticalPathChart';
+import { TaskDetailModal } from './TaskDetailModal';
 import { CriticalPathTaskNode, TaskCriticalPathReport } from '../types/projectHealth';
 
 /**
@@ -15,6 +18,8 @@ export function TaskCriticalPathPanel({
   readonly report: TaskCriticalPathReport;
   readonly hideTables?: boolean;
 }) {
+  const [selectedNode, setSelectedNode] = useState<CriticalPathTaskNode | null>(null);
+
   if (report.criticalPath.length === 0) {
     return <Alert type="info" showIcon message="No leaf tasks found for this project yet." />;
   }
@@ -75,6 +80,14 @@ export function TaskCriticalPathPanel({
                 render: (_, t: CriticalPathTaskNode) =>
                   t.completedAt ? <Tag color="green">Completed {t.completedAt}</Tag> : <Tag>Not completed</Tag>,
               },
+              {
+                title: 'Actions',
+                render: (_, t: CriticalPathTaskNode) => (
+                  <Button size="small" icon={<InfoCircleOutlined />} onClick={() => setSelectedNode(t)}>
+                    Details
+                  </Button>
+                ),
+              },
             ]}
           />
 
@@ -98,6 +111,7 @@ export function TaskCriticalPathPanel({
           )}
         </>
       )}
+      <TaskDetailModal node={selectedNode} onClose={() => setSelectedNode(null)} />
     </Space>
   );
 }

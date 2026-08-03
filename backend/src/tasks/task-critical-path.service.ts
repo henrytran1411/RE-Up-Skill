@@ -1,12 +1,37 @@
 import { Injectable } from '@nestjs/common';
 import { TaskRecord } from './entities/task-record.entity';
 
+/** One task in a blocker's own longest chain — used to list the actual tasks behind a blocking branch, not just its total. */
+export interface ChainTaskSummary {
+  id: string;
+  taskCode: string | null;
+  taskName: string;
+  points: number;
+  completedAt: string | null;
+  /** True when this same task also appears in another blocker's chain on this node — its points are only counted once in the node's deduplicated blockersTotalChainPoints, so this flags it for the UI to highlight (and, if useful, list that blocker first). */
+  sharedWithOtherBlockers: boolean;
+}
+
 /** One task blocking a critical-path task — not just its critical-chain predecessor, every real blocker. */
 export interface CriticalPathBlocker {
   id: string;
   taskCode: string | null;
   taskName: string;
+  /** This blocker's own points. */
   points: number;
+  /**
+   * This blocker's own longest upstream chain total — its points plus
+   * everything transitively blocking IT (e.g. if this blocker is itself
+   * blocked by another task, that task's points are folded in here too).
+   * This, not `points`, is what actually explains why a given branch did or
+   * didn't win the critical path — a blocker with few points of its own can
+   * still represent a long chain once its own blockers are counted.
+   */
+  chainPoints: number;
+  /** Sum of chain[].points where completedAt is set — how much of this blocker's own chain is actually done. */
+  chainCompletedPoints: number;
+  /** The actual tasks making up this blocker's longest chain, oldest first, ending at the blocker itself. */
+  chain: ChainTaskSummary[];
 }
 
 export interface CriticalPathTaskNode {
@@ -19,8 +44,19 @@ export interface CriticalPathTaskNode {
   completedAt: string | null;
   /** Every task that blocks this one, resolved from blockedByTaskIds — a task can be blocked by more than one, but only the longest chain among them determines the critical path itself. */
   blockers: CriticalPathBlocker[];
-  /** Sum of blockers[].points, for display without the caller having to reduce it. */
-  blockersTotalPoints: number;
+  /**
+   * How much real work sits behind every blocking branch, not just the one
+   * that won — the UNION of every task appearing in any blocker's own chain,
+   * each counted once. Two blockers can share an upstream task (e.g. both
+   * ultimately blocked by the same earlier task); summing each blocker's
+   * chainPoints independently would double-count that shared task, so this
+   * deduplicates by task id first. See ChainTaskSummary.sharedWithOtherBlockers.
+   */
+  blockersTotalChainPoints: number;
+  /** The completed half of blockersTotalChainPoints's same deduplicated union. */
+  blockersCompletedChainPoints: number;
+  /** blockersCompletedChainPoints / blockersTotalChainPoints * 100 — how much of the work blocking this task is actually done. 100 when this task has no blockers (nothing left to finish first). */
+  blockersChainPercentDone: number;
 }
 
 export interface NonCriticalEpicGroup {
@@ -111,10 +147,57 @@ export class TaskCriticalPathService {
     const criticalPathIds = new Set(best.path);
     const criticalPath: CriticalPathTaskNode[] = best.path.map((id) => {
       const t = byId.get(id) as TaskRecord;
-      const blockers: CriticalPathBlocker[] = t.blockedByTaskIds
+      // Every node was walked in the loop above, so its longest-chain-ending-here (total + path) is already
+      // memoized — reuse it rather than recomputing, and rather than reporting just the blocker's own points.
+      const rawChains = t.blockedByTaskIds
         .map((blockerId) => byId.get(blockerId))
         .filter((b): b is TaskRecord => b !== undefined)
-        .map((b) => ({ id: b.id, taskCode: b.taskCode, taskName: b.taskName, points: b.points }));
+        .map((b) => ({ blocker: b, path: (memo.get(b.id) ?? { total: b.points, path: [b.id] }).path }));
+
+      // A task's own chain (per blocker) is reported in full regardless — but two blockers can share an
+      // upstream task, so tally how many chains each task-id appears in before building the union total.
+      const chainIdCounts = new Map<string, number>();
+      for (const { path } of rawChains) {
+        for (const chainId of path) {
+          chainIdCounts.set(chainId, (chainIdCounts.get(chainId) ?? 0) + 1);
+        }
+      }
+
+      const blockers: CriticalPathBlocker[] = rawChains.map(({ blocker: b, path }) => {
+        const chain: ChainTaskSummary[] = path.map((chainId) => {
+          const chainTask = byId.get(chainId) as TaskRecord;
+          return {
+            id: chainTask.id,
+            taskCode: chainTask.taskCode,
+            taskName: chainTask.taskName,
+            points: chainTask.points,
+            completedAt: chainTask.completedAt,
+            sharedWithOtherBlockers: (chainIdCounts.get(chainId) ?? 0) > 1,
+          };
+        });
+        const chainPoints = chain.reduce((sum, c) => sum + c.points, 0);
+        return {
+          id: b.id,
+          taskCode: b.taskCode,
+          taskName: b.taskName,
+          points: b.points,
+          chainPoints,
+          chainCompletedPoints: chain.filter((c) => c.completedAt !== null).reduce((sum, c) => sum + c.points, 0),
+          chain,
+        };
+      });
+
+      // Deduplicated union across every blocker's chain — each shared task's points counted exactly once.
+      const unionTasks = new Map<string, ChainTaskSummary>();
+      for (const b of blockers) {
+        for (const c of b.chain) {
+          unionTasks.set(c.id, c);
+        }
+      }
+      const blockersTotalChainPoints = Array.from(unionTasks.values()).reduce((sum, c) => sum + c.points, 0);
+      const blockersCompletedChainPoints = Array.from(unionTasks.values())
+        .filter((c) => c.completedAt !== null)
+        .reduce((sum, c) => sum + c.points, 0);
       return {
         id: t.id,
         taskCode: t.taskCode,
@@ -124,7 +207,10 @@ export class TaskCriticalPathService {
         points: t.points,
         completedAt: t.completedAt,
         blockers,
-        blockersTotalPoints: blockers.reduce((sum, b) => sum + b.points, 0),
+        blockersTotalChainPoints,
+        blockersCompletedChainPoints,
+        blockersChainPercentDone:
+          blockersTotalChainPoints > 0 ? Math.round((blockersCompletedChainPoints / blockersTotalChainPoints) * 100) : 100,
       };
     });
 
