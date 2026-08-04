@@ -366,7 +366,38 @@ interface DetailFormValues {
   complexity: number;
 }
 
-/** Full detail of one generated row (its Epic + User Story + single Task) — opened via the review table's "View / Edit" button. Editing here mutates the in-memory backlog only; nothing is saved until Submit. */
+/** Splits a Task's stored name into its auto-derived [Task-x.x.x]-style prefix (if any) and the bare summary after it, so the modal can offer them as two separate fields — editing the prefix on its own is easy to get wrong when it's buried inside one longer string. */
+function splitTaskName(taskName: string): { prefix: string; bareName: string } {
+  const match = taskName.match(/^(\[Task-[\d.]+\])\s*(.*)$/);
+  if (!match) {
+    return { prefix: '', bareName: taskName };
+  }
+  return { prefix: match[1], bareName: match[2] };
+}
+
+interface DetailFormFields {
+  epicName: string;
+  epicDescription?: string;
+  storyName: string;
+  storyDescription?: string;
+  taskPrefix: string;
+  taskSummary: string;
+  taskDescription?: string;
+  points: number;
+  estimateHours: number;
+  complexity: number;
+}
+
+/**
+ * Full detail of one generated row (its Epic + User Story + single Task) —
+ * opened via the review table's "View / Edit" button. Editing here mutates
+ * the in-memory backlog only; nothing is saved until Submit. The Task's
+ * code prefix (e.g. "[Task-1.1.1]", auto-derived once its Story is mapped
+ * onto an existing [US-x.x] Jira Story — see deriveTaskName) is broken out
+ * into its own field so it can be edited or cleared without risking a typo
+ * in the surrounding summary text; whatever is saved here is final and
+ * won't be re-derived or overwritten afterward.
+ */
 function GeneratedItemDetailModal({
   epic,
   story,
@@ -378,18 +409,19 @@ function GeneratedItemDetailModal({
   readonly onClose: () => void;
   readonly onSave: (values: DetailFormValues) => void;
 }) {
-  const [form] = Form.useForm<DetailFormValues>();
+  const [form] = Form.useForm<DetailFormFields>();
   const task = story.tasks[0];
+  const { prefix, bareName } = splitTaskName(task?.name ?? '');
+
+  const handleOk = () =>
+    form.validateFields().then((values) => {
+      const taskName = values.taskPrefix.trim() ? `${values.taskPrefix.trim()} ${values.taskSummary.trim()}` : values.taskSummary.trim();
+      onSave({ ...values, taskName });
+      onClose();
+    });
 
   return (
-    <Modal
-      title="Task Detail"
-      open
-      width={560}
-      okText="Save"
-      onCancel={onClose}
-      onOk={() => form.validateFields().then((values) => { onSave(values); onClose(); })}
-    >
+    <Modal title="Task Detail" open width={560} okText="Save" onCancel={onClose} onOk={handleOk}>
       <Form
         form={form}
         layout="vertical"
@@ -398,7 +430,8 @@ function GeneratedItemDetailModal({
           epicDescription: epic.description,
           storyName: story.name,
           storyDescription: story.description,
-          taskName: task?.name,
+          taskPrefix: prefix,
+          taskSummary: bareName,
           taskDescription: task?.description,
           points: task?.points,
           estimateHours: task?.estimateHours,
@@ -417,9 +450,19 @@ function GeneratedItemDetailModal({
         <Form.Item name="storyDescription" label="User Story description">
           <Input.TextArea rows={2} />
         </Form.Item>
-        <Form.Item name="taskName" label="Task name" rules={[{ required: true, message: 'Required' }]}>
-          <Input />
-        </Form.Item>
+        <Space wrap align="start" style={{ width: '100%' }}>
+          <Form.Item
+            name="taskPrefix"
+            label="Task code prefix"
+            style={{ width: 180 }}
+            extra="Auto-filled once the Story above is mapped onto an existing Jira Story — edit or clear freely."
+          >
+            <Input placeholder="[Task-1.1.1]" />
+          </Form.Item>
+          <Form.Item name="taskSummary" label="Task summary" style={{ width: 320 }} rules={[{ required: true, message: 'Required' }]}>
+            <Input />
+          </Form.Item>
+        </Space>
         <Form.Item name="taskDescription" label="Task description" extra="Includes the generated Acceptance Criteria, if any — edit freely.">
           <Input.TextArea rows={8} />
         </Form.Item>
@@ -602,12 +645,15 @@ function BacklogImportFlow({ sourceKind }: { readonly sourceKind: 'document' | '
     }
   };
 
+  // Deliberately does NOT run syncTaskPrefixes here — this is also how a manual edit from the detail
+  // modal gets saved, and re-deriving on every mutation would immediately overwrite whatever prefix
+  // the user just typed. Auto-derivation only runs once, right where a Story's [US-x.x] mapping actually
+  // changes (acceptStoryMatch below) and on the initial preview — never as a blanket side effect.
   const updateBacklog = (mutator: (draft: LocalBacklog) => void) => {
     setBacklog((prev) => {
       if (!prev) return prev;
       const next: LocalBacklog = JSON.parse(JSON.stringify(prev));
       mutator(next);
-      syncTaskPrefixes(next);
       return next;
     });
   };
@@ -649,7 +695,14 @@ function BacklogImportFlow({ sourceKind }: { readonly sourceKind: 'document' | '
     updateBacklog((draft) => {
       const epic = draft.epics.find((e) => e._id === location.epicId);
       const story = epic?.userStories.find((s) => s._id === location.storyId);
-      if (story) story.name = existingName;
+      if (!story) return;
+      story.name = existingName;
+      // Auto-derive this one Story's Task prefix from its new [US-x.x] mapping — scoped to just this
+      // story, not every task in the backlog, so an unrelated task's manually-edited prefix is never touched.
+      const task = story.tasks[0];
+      if (task) {
+        task.name = deriveTaskName(existingName, task.name);
+      }
     });
     setMappedStoryKeys((prev) => ({ ...prev, [location.storyId]: existingKey }));
     setResolvedMatches((prev) => new Set(prev).add(`story:${match.generatedStoryName}`));
