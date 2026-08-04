@@ -722,26 +722,52 @@ export class BacklogGeneratorService {
   }
 
   /** The bare Gemini structured-output call, shared by callGemini() and suggestExistingMatches() — hits the API, unwraps the response, JSON.parses the text part. Callers cast the result to whatever shape their own responseSchema describes. */
-  private async callGeminiJson(apiKey: string, model: string, systemPrompt: string, responseSchema: unknown, sourceText: string): Promise<unknown> {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ role: 'user', parts: [{ text: sourceText }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema,
-          },
-        }),
-      },
-    );
+  /** Gemini's free tier occasionally returns 503 ("currently experiencing high demand") or 429 (rate limit) — both are transient, safe to retry (this call has no side effects), so a couple of short backoff retries clear most of them without the user needing to manually click Generate again. */
+  private static readonly GEMINI_RETRYABLE_STATUSES = new Set([429, 503]);
+  private static readonly GEMINI_MAX_ATTEMPTS = 3;
 
-    if (!response.ok) {
-      throw new BadRequestException(`Gemini API call failed (${response.status}): ${await response.text()}`);
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async fetchGeminiResponse(apiKey: string, model: string, systemPrompt: string, responseSchema: unknown, sourceText: string): Promise<Response> {
+    let lastResponse: Response | null = null;
+    let lastBodyText = '';
+    for (let attempt = 1; attempt <= BacklogGeneratorService.GEMINI_MAX_ATTEMPTS; attempt++) {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: sourceText }] }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              responseSchema,
+            },
+          }),
+        },
+      );
+      if (response.ok) {
+        return response;
+      }
+
+      lastResponse = response;
+      lastBodyText = await response.text();
+      const isRetryable = BacklogGeneratorService.GEMINI_RETRYABLE_STATUSES.has(response.status);
+      if (!isRetryable || attempt === BacklogGeneratorService.GEMINI_MAX_ATTEMPTS) {
+        throw new BadRequestException(`Gemini API call failed (${response.status}): ${lastBodyText}`);
+      }
+      this.logger.warn(`Gemini API call failed (${response.status}), retrying (attempt ${attempt}/${BacklogGeneratorService.GEMINI_MAX_ATTEMPTS})...`);
+      await this.delay(attempt * 1500);
     }
+    // Unreachable — the loop above always either returns or throws — but keeps TypeScript satisfied.
+    throw new BadRequestException(`Gemini API call failed (${lastResponse?.status}): ${lastBodyText}`);
+  }
+
+  private async callGeminiJson(apiKey: string, model: string, systemPrompt: string, responseSchema: unknown, sourceText: string): Promise<unknown> {
+    const response = await this.fetchGeminiResponse(apiKey, model, systemPrompt, responseSchema, sourceText);
 
     const body = (await response.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
