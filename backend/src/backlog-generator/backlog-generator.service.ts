@@ -284,6 +284,28 @@ export class BacklogGeneratorService {
   }
 
   /**
+   * Same pipeline as previewFromDocument(), but the "requirements document"
+   * is a real Jira issue's own summary + description instead of an
+   * uploaded .docx — fetched live via JiraService.fetchIssueContentByLink,
+   * using the same connection/token every other Jira feature in this app
+   * already uses. Nothing is saved locally, same as the document flow.
+   */
+  async previewFromJiraLink(jiraLink: string): Promise<GeneratedBacklog> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+
+    const sourceText = await this.jiraService.fetchIssueContentByLink(jiraLink);
+    if (sourceText.trim().length < 20) {
+      throw new BadRequestException('Could not extract enough content from that Jira issue — does it have a description?');
+    }
+
+    const backlog = await this.callGemini(apiKey, model, DOCUMENT_SYSTEM_PROMPT, DOCUMENT_BACKLOG_RESPONSE_SCHEMA, sourceText, true);
+    if (backlog.epics.length === 0) {
+      throw new BadRequestException('Could not find any Epics/User Stories in that Jira issue — try a more detailed one.');
+    }
+    return backlog;
+  }
+
+  /**
    * Creates every Epic -> User Story -> Task in `backlog` directly in real
    * Jira, in order, so each child's Jira `parent` is already known by the
    * time it's created. Nothing is saved locally first — this is the

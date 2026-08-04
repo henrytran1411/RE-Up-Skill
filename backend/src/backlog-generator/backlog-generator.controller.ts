@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, Post, UploadedFile, UseIntercept
 import { FileInterceptor } from '@nestjs/platform-express';
 import { BacklogGeneratorService } from './backlog-generator.service';
 import { GenerateBacklogDto } from './dto/generate-backlog.dto';
+import { PreviewFromJiraLinkDto } from './dto/preview-from-jira-link.dto';
 import { PushGeneratedBacklogDto } from './dto/push-generated-backlog.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
@@ -42,6 +43,17 @@ export class BacklogGeneratorController {
       throw new BadRequestException('A .docx file is required');
     }
     return this.backlogGeneratorService.previewFromDocument(file.buffer);
+  }
+
+  /**
+   * Same as preview-from-document, but the source is a real Jira issue —
+   * fetches its summary + description live via the saved Jira connection
+   * (any browse/board/issues URL shape, or a bare issue key) instead of an
+   * uploaded file.
+   */
+  @Post('preview-from-jira-link')
+  previewFromJiraLink(@Body() dto: PreviewFromJiraLinkDto) {
+    return this.backlogGeneratorService.previewFromJiraLink(dto.jiraLink);
   }
 
   /**

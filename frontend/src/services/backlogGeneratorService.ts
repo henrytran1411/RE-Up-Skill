@@ -27,6 +27,12 @@ export async function previewBacklogFromDocument(file: File): Promise<GeneratedB
   return data;
 }
 
+/** Same as previewBacklogFromDocument, but the source is a real Jira issue — fetches its summary + description live via the saved Jira connection (any browse/board/issues URL shape, or a bare issue key). */
+export async function previewBacklogFromJiraLink(jiraLink: string): Promise<GeneratedBacklog> {
+  const { data } = await apiClient.post<GeneratedBacklog>('/backlog-generator/preview-from-jira-link', { jiraLink });
+  return data;
+}
+
 /** Creates the given (reviewed) Epic/User Story/Task structure directly in Jira — a live, visible write. Admin-only on the backend. */
 export async function pushGeneratedBacklogToJira(jiraProjectKey: string, epics: GeneratedEpic[]): Promise<GeneratedBacklogPushSummary> {
   const { data } = await apiClient.post<GeneratedBacklogPushSummary>('/backlog-generator/push-generated-to-jira', {

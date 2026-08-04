@@ -1339,6 +1339,106 @@ export class JiraService {
     return results;
   }
 
+  /**
+   * Fetches a real Jira issue's summary + description, or a real Confluence
+   * page's title + body (whichever the pasted link points at — Confluence
+   * URLs contain "/wiki/", Jira issue URLs don't), flattened from ADF to
+   * plain text either way. Used as an alternative to a .docx upload for
+   * the Backlog Generator's document-import flow, so the "requirements
+   * document" can be an existing Jira issue or Confluence page instead of
+   * a file — both live on the same Atlassian site and the same saved
+   * connection/token already used for every other Jira feature works for
+   * Confluence too.
+   */
+  async fetchIssueContentByLink(jiraLink: string): Promise<string> {
+    if (jiraLink.includes('/wiki/')) {
+      return this.fetchConfluencePageContent(jiraLink);
+    }
+
+    const issueKey = this.extractIssueKeyFromLink(jiraLink);
+    if (!issueKey) {
+      throw new BadRequestException(
+        'Could not find a Jira issue key in that link — expected something like ".../browse/ABC-123", or a bare "ABC-123".',
+      );
+    }
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) first.');
+    }
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    const response = await fetch(`${baseUrl}/rest/api/3/issue/${issueKey}?fields=summary,description`, {
+      headers: { Authorization: this.authHeader(connection), Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new BadRequestException(`Could not fetch Jira issue ${issueKey} (${response.status}): ${await response.text()}`);
+    }
+    const issue = (await response.json()) as { fields: { summary: string; description?: unknown } };
+    const descriptionText = issue.fields.description ? this.adfToPlainText(issue.fields.description) : '';
+    return `${issue.fields.summary}\n\n${descriptionText}`.trim();
+  }
+
+  /** Jira issue keys look like "ABC-123" wherever they appear in a pasted URL — takes the last match, since some URL shapes (e.g. a board link with ?selectedIssue=) repeat the project key earlier without a trailing number. */
+  private extractIssueKeyFromLink(link: string): string | null {
+    const matches = link.match(/[A-Za-z][A-Za-z0-9]*-\d+/g);
+    if (!matches || matches.length === 0) {
+      return null;
+    }
+    return matches[matches.length - 1].toUpperCase();
+  }
+
+  private async fetchConfluencePageContent(link: string): Promise<string> {
+    const pageId = link.match(/\/pages\/(\d+)/)?.[1];
+    if (!pageId) {
+      throw new BadRequestException(
+        'Could not find a Confluence page id in that link — expected something like ".../wiki/spaces/<space>/pages/12345/...".',
+      );
+    }
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) first.');
+    }
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    const response = await fetch(`${baseUrl}/wiki/api/v2/pages/${pageId}?body-format=atlas_doc_format`, {
+      headers: { Authorization: this.authHeader(connection), Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new BadRequestException(`Could not fetch Confluence page ${pageId} (${response.status}): ${await response.text()}`);
+    }
+    const page = (await response.json()) as { title: string; body?: { atlas_doc_format?: { value: string } } };
+    const adfJson = page.body?.atlas_doc_format?.value;
+    let bodyText = '';
+    if (adfJson) {
+      try {
+        bodyText = this.adfToPlainText(JSON.parse(adfJson));
+      } catch (err) {
+        this.logger.warn(`Could not parse Confluence page ${pageId}'s body as ADF: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    return `${page.title}\n\n${bodyText}`.trim();
+  }
+
+  /** Flattens an Atlassian Document Format node tree (a Jira issue's real `description` field) into plain text — paragraphs/headings on their own line, list items prefixed with "- ", text/hardBreak leaves passed through. */
+  private adfToPlainText(node: unknown): string {
+    if (!node || typeof node !== 'object') {
+      return '';
+    }
+    const adfNode = node as { type?: string; text?: string; content?: unknown[] };
+    if (adfNode.type === 'text') {
+      return adfNode.text ?? '';
+    }
+    if (adfNode.type === 'hardBreak') {
+      return '\n';
+    }
+    const childText = (adfNode.content ?? []).map((child) => this.adfToPlainText(child)).join('');
+    if (adfNode.type === 'paragraph' || adfNode.type === 'heading') {
+      return `${childText}\n`;
+    }
+    if (adfNode.type === 'listItem') {
+      return `- ${childText}\n`;
+    }
+    return childText;
+  }
+
   /** Creates one brand-new issue in real Jira — this is a live, visible write, unlike every other method in this service. */
   async createIssue(dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
     const connection = await this.resolveConnection();

@@ -14,6 +14,7 @@ import {
 import {
   generateBacklog,
   previewBacklogFromDocument,
+  previewBacklogFromJiraLink,
   pushGeneratedBacklogToJira,
   suggestExistingMatches,
 } from '../../services/backlogGeneratorService';
@@ -438,7 +439,93 @@ function GeneratedItemDetailModal({
   );
 }
 
-function FromDocumentForm() {
+/** Step 3 of BacklogImportFlow when sourceKind is "document" — a .docx upload. */
+function DocumentImportStep({ onGenerated }: { readonly onGenerated: (backlog: GeneratedBacklog) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    if (!file) {
+      setError('Choose a .docx file first');
+      return;
+    }
+    setGenerating(true);
+    setError(null);
+    try {
+      onGenerated(await previewBacklogFromDocument(file));
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to read Epics/User Stories from this document'));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <>
+      <Space wrap align="start">
+        <Upload
+          accept=".docx"
+          maxCount={1}
+          fileList={file ? [{ uid: '1', name: file.name }] : []}
+          beforeUpload={(f) => {
+            setFile(f);
+            return false;
+          }}
+          onRemove={() => setFile(null)}
+        >
+          <Button icon={<UploadOutlined />}>Choose .docx file</Button>
+        </Upload>
+        <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} disabled={!file} onClick={handleGenerate}>
+          Generate Tasks
+        </Button>
+      </Space>
+      {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} />}
+    </>
+  );
+}
+
+/** Step 3 of BacklogImportFlow when sourceKind is "jira-link" — a Jira issue (any URL shape, or a bare key) or a Confluence page link, both fetched live via the saved Jira connection (same token, same Atlassian site). */
+function JiraLinkImportStep({ onGenerated }: { readonly onGenerated: (backlog: GeneratedBacklog) => void }) {
+  const [link, setLink] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGenerate = async () => {
+    if (!link.trim()) {
+      setError('Paste a Jira issue or Confluence page link (or a bare Jira key) first');
+      return;
+    }
+    setGenerating(true);
+    setError(null);
+    try {
+      onGenerated(await previewBacklogFromJiraLink(link.trim()));
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to read Epics/User Stories from that link'));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <>
+      <Space wrap align="start">
+        <Input
+          placeholder="Jira issue (.../browse/ABC-123, or just ABC-123) or Confluence page (.../wiki/spaces/.../pages/123456/...)"
+          style={{ width: 460 }}
+          value={link}
+          onChange={(e) => setLink(e.target.value)}
+        />
+        <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} disabled={!link.trim()} onClick={handleGenerate}>
+          Generate Tasks
+        </Button>
+      </Space>
+      {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} />}
+    </>
+  );
+}
+
+function BacklogImportFlow({ sourceKind }: { readonly sourceKind: 'document' | 'jira-link' }) {
   const { currentEmployee } = useAuth();
   const isAdmin = currentEmployee?.role === Role.ADMIN;
 
@@ -448,9 +535,6 @@ function FromDocumentForm() {
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [existingError, setExistingError] = useState<string | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [backlog, setBacklog] = useState<LocalBacklog | null>(null);
 
   const [checkingMatches, setCheckingMatches] = useState(false);
@@ -486,7 +570,6 @@ function FromDocumentForm() {
   const handleSelectProject = (value: string) => {
     setTargetJiraKey(value);
     setBacklog(null);
-    setFile(null);
     setMatchSuggestions(null);
     setResolvedMatches(new Set());
     setMappedEpicKeys({});
@@ -494,28 +577,15 @@ function FromDocumentForm() {
     setPushResult(null);
   };
 
-  const handleGenerate = async () => {
-    if (!file) {
-      setError('Choose a .docx file first');
-      return;
-    }
-    setGenerating(true);
-    setError(null);
-    setBacklog(null);
+  const handleBacklogGenerated = (raw: GeneratedBacklog) => {
+    const withIds = withLocalIds(raw);
+    syncTaskPrefixes(withIds);
+    setBacklog(withIds);
     setPushResult(null);
     setMatchSuggestions(null);
     setResolvedMatches(new Set());
     setMappedEpicKeys({});
     setMappedStoryKeys({});
-    try {
-      const preview = withLocalIds(await previewBacklogFromDocument(file));
-      syncTaskPrefixes(preview);
-      setBacklog(preview);
-    } catch (err) {
-      setError(errorMessage(err, 'Failed to read Epics/User Stories from this document'));
-    } finally {
-      setGenerating(false);
-    }
   };
 
   const handleCheckMatches = async () => {
@@ -645,7 +715,8 @@ function FromDocumentForm() {
   return (
     <>
       <Typography.Paragraph type="secondary">
-        1) Pick the target Jira project. 2) Review what's already there. 3) Upload a .docx requirements document —
+        1) Pick the target Jira project. 2) Review what's already there. 3){' '}
+        {sourceKind === 'document' ? 'Upload a .docx requirements document' : 'Paste a link to a Jira issue or Confluence page'} —
         Gemini extracts its Epics/User Stories, creating exactly <strong>one Task per User Story</strong>. 4) Check
         for existing Epics/Stories that mean the same thing and map onto them instead of duplicating. 5) Review, edit
         or remove any row. 6) Submit. Nothing is saved in this system at any point — only step 6 writes to Jira.
@@ -683,26 +754,13 @@ function FromDocumentForm() {
           />
 
           <Typography.Title level={5} style={{ marginTop: 24 }}>
-            3. Import Word document
+            3. {sourceKind === 'document' ? 'Import Word document' : 'Import from a Jira or Confluence link'}
           </Typography.Title>
-          <Space wrap align="start">
-            <Upload
-              accept=".docx"
-              maxCount={1}
-              fileList={file ? [{ uid: '1', name: file.name }] : []}
-              beforeUpload={(f) => {
-                setFile(f);
-                return false;
-              }}
-              onRemove={() => setFile(null)}
-            >
-              <Button icon={<UploadOutlined />}>Choose .docx file</Button>
-            </Upload>
-            <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} disabled={!file} onClick={handleGenerate}>
-              Generate Tasks
-            </Button>
-          </Space>
-          {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} />}
+          {sourceKind === 'document' ? (
+            <DocumentImportStep onGenerated={handleBacklogGenerated} />
+          ) : (
+            <JiraLinkImportStep onGenerated={handleBacklogGenerated} />
+          )}
         </>
       )}
 
@@ -904,7 +962,12 @@ export function BacklogGeneratorPage() {
             {
               key: 'document',
               label: 'From Word Document',
-              children: <FromDocumentForm />,
+              children: <BacklogImportFlow sourceKind="document" />,
+            },
+            {
+              key: 'jira-link',
+              label: 'From Jira / Confluence Link',
+              children: <BacklogImportFlow sourceKind="jira-link" />,
             },
           ]}
         />
