@@ -100,6 +100,18 @@ const TASK_SCHEMA_PROPERTIES = {
 };
 const TASK_SCHEMA_REQUIRED = ['name', 'points', 'estimateHours', 'complexity'];
 
+/** Document-import only: same Task shape, plus Acceptance Criteria — folded into the Task's description text after parsing (see buildTaskDescriptionWithAcceptanceCriteria), not kept as a separate field downstream. */
+const DOCUMENT_TASK_SCHEMA_PROPERTIES = {
+  ...TASK_SCHEMA_PROPERTIES,
+  acceptanceCriteria: {
+    type: 'ARRAY',
+    items: { type: 'STRING' },
+    description:
+      "Concrete, testable Acceptance Criteria for this Task's User Story — use the document's own Acceptance Criteria for that Story if it states any, otherwise write 3-5 sensible ones based on the story.",
+  },
+};
+const DOCUMENT_TASK_SCHEMA_REQUIRED = [...TASK_SCHEMA_REQUIRED, 'acceptanceCriteria'];
+
 /** Gemini's structured-output schema is a subset of OpenAPI 3.0 — uppercase type names, no min/max keywords beyond what's listed here. */
 const BACKLOG_RESPONSE_SCHEMA = {
   type: 'OBJECT',
@@ -151,7 +163,7 @@ const DOCUMENT_BACKLOG_RESPONSE_SCHEMA = {
               properties: {
                 name: { type: 'STRING', description: 'Short User Story title, e.g. "Login system" — no numbering/prefix.' },
                 description: { type: 'STRING', description: '1-2 sentence summary of this User Story, from the document.' },
-                task: { type: 'OBJECT', properties: TASK_SCHEMA_PROPERTIES, required: TASK_SCHEMA_REQUIRED },
+                task: { type: 'OBJECT', properties: DOCUMENT_TASK_SCHEMA_PROPERTIES, required: DOCUMENT_TASK_SCHEMA_REQUIRED },
               },
               required: ['name', 'task'],
             },
@@ -179,6 +191,7 @@ const DOCUMENT_SYSTEM_PROMPT = `You are a senior technical project manager. You 
 Your job:
 - Identify every Epic (a major capability area) and, under each, every User Story it describes.
 - For each User Story, produce exactly ONE Task that implements it — the Task is that Story's single concrete deliverable, not a further breakdown into multiple sub-tasks.
+- For that Task, also give its Acceptance Criteria: if the document states Acceptance Criteria (or "Definition of Done", "Given/When/Then", etc.) for that User Story, use those; otherwise write 3-5 concrete, testable criteria yourself based on the story.
 - Epic/Story/Task names are short titles only — never include numbering or bracketed codes like "[Epic-1]"; that is added separately.
 - Give the Task realistic points (Fibonacci-ish: 1,2,3,5,8,13), estimateHours, and complexity (1-5).
 - If the document has no clear Epic groupings, group the User Stories you find into sensible Epics yourself.
@@ -561,7 +574,7 @@ export class BacklogGeneratorService {
       epics: Array<{
         name: string;
         description?: string;
-        userStories: Array<{ name: string; description?: string; task: GeneratedTask }>;
+        userStories: Array<{ name: string; description?: string; task: GeneratedTask & { acceptanceCriteria?: string[] } }>;
       }>;
     };
     return {
@@ -571,10 +584,30 @@ export class BacklogGeneratorService {
         userStories: (epic.userStories ?? []).map((story) => ({
           name: story.name,
           description: story.description,
-          tasks: story.task ? [story.task] : [],
+          tasks: story.task
+            ? [
+                {
+                  name: story.task.name,
+                  points: story.task.points,
+                  estimateHours: story.task.estimateHours,
+                  complexity: story.task.complexity,
+                  description: this.appendAcceptanceCriteria(story.task.description, story.task.acceptanceCriteria),
+                },
+              ]
+            : [],
         })),
       })),
     };
+  }
+
+  /** Folds a Task's Acceptance Criteria into its description text as a bulleted block — the document-import flow's only place ACs live; nothing downstream (review, Jira push, editing) needs to know about them as a separate field. */
+  private appendAcceptanceCriteria(description: string | undefined, acceptanceCriteria: string[] | undefined): string | undefined {
+    const criteria = (acceptanceCriteria ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
+    if (criteria.length === 0) {
+      return description;
+    }
+    const acBlock = ['Acceptance Criteria:', ...criteria.map((c) => `- ${c}`)].join('\n');
+    return description ? `${description}\n\n${acBlock}` : acBlock;
   }
 
   /** The bare Gemini structured-output call, shared by callGemini() and suggestExistingMatches() — hits the API, unwraps the response, JSON.parses the text part. Callers cast the result to whatever shape their own responseSchema describes. */

@@ -1384,6 +1384,53 @@ export class JiraService {
   /** Jira's validation errors sometimes name a field by its internal system name rather than the request key that set it — e.g. rejecting `parent` comes back keyed as `parentId`. */
   private static readonly FIELD_ERROR_ALIASES: Record<string, string> = { parentId: 'parent' };
 
+  /**
+   * Converts a plain-text description into Jira's ADF (Atlassian Document
+   * Format) — blank-line-separated blocks become separate paragraphs, and a
+   * block whose every line starts with "- " (e.g. the Acceptance Criteria
+   * the document-import backlog generator appends) renders as a real
+   * bullet list instead of a single run-on line, since ADF paragraphs don't
+   * treat a bare "\n" as a line break.
+   */
+  private buildAdfDescription(text: string): { type: 'doc'; version: 1; content: unknown[] } {
+    const blocks = text
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter((block) => block.length > 0);
+
+    const content = blocks.map((block) => {
+      const lines = block
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      if (lines.length > 0 && lines.every((line) => line.startsWith('- '))) {
+        return {
+          type: 'bulletList',
+          content: lines.map((line) => ({
+            type: 'listItem',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: line.slice(2) }] }],
+          })),
+        };
+      }
+
+      const paragraphContent: unknown[] = [];
+      lines.forEach((line, index) => {
+        if (index > 0) {
+          paragraphContent.push({ type: 'hardBreak' });
+        }
+        paragraphContent.push({ type: 'text', text: line });
+      });
+      return { type: 'paragraph', content: paragraphContent };
+    });
+
+    return {
+      type: 'doc',
+      version: 1,
+      content: content.length > 0 ? content : [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+    };
+  }
+
   private async createIssueWithConnection(connection: JiraConnection, dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
     const input = { projectKey: dto.projectKey, summary: dto.summary };
     if (!dto.projectKey || !dto.summary) {
@@ -1396,11 +1443,7 @@ export class JiraService {
       issuetype: { name: dto.issueType },
     };
     if (dto.description) {
-      fields.description = {
-        type: 'doc',
-        version: 1,
-        content: [{ type: 'paragraph', content: [{ type: 'text', text: dto.description }] }],
-      };
+      fields.description = this.buildAdfDescription(dto.description);
     }
     if (dto.assigneeAccountId) {
       fields.assignee = { id: dto.assigneeAccountId };

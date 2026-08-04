@@ -347,8 +347,8 @@ function GeneratedItemDetailModal({
         <Form.Item name="taskName" label="Task name" rules={[{ required: true, message: 'Required' }]}>
           <Input />
         </Form.Item>
-        <Form.Item name="taskDescription" label="Task description">
-          <Input.TextArea rows={2} />
+        <Form.Item name="taskDescription" label="Task description" extra="Includes the generated Acceptance Criteria, if any — edit freely.">
+          <Input.TextArea rows={8} />
         </Form.Item>
         <Space wrap>
           <Form.Item name="points" label="Points" rules={[{ required: true, message: 'Required' }]}>
