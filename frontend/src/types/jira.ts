@@ -61,6 +61,8 @@ export interface JiraProjectPushRow {
   outcome: 'pushed' | 'already_in_jira' | 'failed' | 'skipped_parent_failed';
   jiraIssueKey: string | null;
   errorMessage: string | null;
+  /** Optional fields Jira rejected for this project/screen and that were dropped so the create could still succeed. */
+  droppedFields?: string[];
 }
 
 export interface JiraProjectPushSummary {

@@ -3,17 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
+import * as mammoth from 'mammoth';
 import { TaskRecord } from '../tasks/entities/task-record.entity';
 import { TaskStatus } from '../common/enums/task-status.enum';
 import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
+import { JiraService } from '../jira/jira.service';
 import { GenerateBacklogDto } from './dto/generate-backlog.dto';
 
 /** Parallels JiraService's "Unassigned (Jira)" placeholder — kept as a separate account so generated tasks stay distinguishable from Jira-synced ones when reassigning real owners later. */
 const UNASSIGNED_GENERATED_EMAIL = 'unassigned-generated@devperf.internal';
 const UNASSIGNED_GENERATED_NAME = 'Unassigned (Generated)';
 
-interface GeneratedTask {
+export interface GeneratedTask {
   name: string;
   description?: string;
   points: number;
@@ -21,20 +23,41 @@ interface GeneratedTask {
   complexity: number;
 }
 
-interface GeneratedStory {
+export interface GeneratedStory {
   name: string;
   description?: string;
   tasks: GeneratedTask[];
 }
 
-interface GeneratedEpic {
+export interface GeneratedEpic {
   name: string;
   description?: string;
   userStories: GeneratedStory[];
 }
 
-interface GeneratedBacklog {
+export interface GeneratedBacklog {
   epics: GeneratedEpic[];
+}
+
+type GeneratedIssueType = 'Epic' | 'Story' | 'Task';
+
+/** One Epic/Story/Task's outcome when pushing an in-memory (not-yet-persisted-locally) generated backlog straight into Jira. */
+export interface GeneratedBacklogPushRow {
+  name: string;
+  issueType: GeneratedIssueType;
+  outcome: 'pushed' | 'already_exists' | 'failed' | 'skipped_parent_failed';
+  jiraIssueKey: string | null;
+  errorMessage: string | null;
+  /** Optional fields Jira rejected for this project/screen and that were dropped so the create could still succeed — see JiraCreateIssueResult.droppedFields. */
+  droppedFields?: string[];
+}
+
+export interface GeneratedBacklogPushSummary {
+  jiraProjectKey: string;
+  totalItems: number;
+  pushed: number;
+  failed: number;
+  rows: GeneratedBacklogPushRow[];
 }
 
 export interface BacklogGeneratorResult {
@@ -49,7 +72,35 @@ export interface BacklogGeneratorResult {
   document: string;
 }
 
-/** Gemini's structured-output schema is a subset of OpenAPI 3.0 — uppercase type names, no min/max/description keywords beyond what's listed here. */
+export interface EpicMatch {
+  generatedEpicName: string;
+  matchedExistingKey: string | null;
+  matchedExistingName: string | null;
+  reason: string;
+}
+
+export interface StoryMatch {
+  generatedStoryName: string;
+  matchedExistingKey: string | null;
+  matchedExistingName: string | null;
+  reason: string;
+}
+
+export interface MatchSuggestionResult {
+  epicMatches: EpicMatch[];
+  storyMatches: StoryMatch[];
+}
+
+const TASK_SCHEMA_PROPERTIES = {
+  name: { type: 'STRING', description: 'Short, actionable Task title — no numbering/prefix.' },
+  description: { type: 'STRING', description: 'One sentence of implementation detail.' },
+  points: { type: 'INTEGER', description: 'Agile story points for this task, 1-13.' },
+  estimateHours: { type: 'NUMBER', description: 'Estimated hours of work, at least 1.' },
+  complexity: { type: 'INTEGER', description: '1 (trivial) to 5 (highly complex).' },
+};
+const TASK_SCHEMA_REQUIRED = ['name', 'points', 'estimateHours', 'complexity'];
+
+/** Gemini's structured-output schema is a subset of OpenAPI 3.0 — uppercase type names, no min/max keywords beyond what's listed here. */
 const BACKLOG_RESPONSE_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -68,22 +119,41 @@ const BACKLOG_RESPONSE_SCHEMA = {
               properties: {
                 name: { type: 'STRING', description: 'Short User Story title, e.g. "Login system" — no numbering/prefix.' },
                 description: { type: 'STRING', description: '1-2 sentence summary of this User Story.' },
-                tasks: {
-                  type: 'ARRAY',
-                  items: {
-                    type: 'OBJECT',
-                    properties: {
-                      name: { type: 'STRING', description: 'Short, actionable Task title — no numbering/prefix.' },
-                      description: { type: 'STRING', description: 'One sentence of implementation detail.' },
-                      points: { type: 'INTEGER', description: 'Agile story points for this task, 1-13.' },
-                      estimateHours: { type: 'NUMBER', description: 'Estimated hours of work, at least 1.' },
-                      complexity: { type: 'INTEGER', description: '1 (trivial) to 5 (highly complex).' },
-                    },
-                    required: ['name', 'points', 'estimateHours', 'complexity'],
-                  },
-                },
+                tasks: { type: 'ARRAY', items: { type: 'OBJECT', properties: TASK_SCHEMA_PROPERTIES, required: TASK_SCHEMA_REQUIRED } },
               },
               required: ['name', 'tasks'],
+            },
+          },
+        },
+        required: ['name', 'userStories'],
+      },
+    },
+  },
+  required: ['epics'],
+};
+
+/** Same shape as BACKLOG_RESPONSE_SCHEMA, but each User Story carries exactly one Task object (not an array) — the document-import flow's "one task per user story" rule is enforced structurally rather than by prompt instruction alone. */
+const DOCUMENT_BACKLOG_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    epics: {
+      type: 'ARRAY',
+      description: 'Every Epic found in the document, in the order they appear.',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING', description: 'Short Epic title, e.g. "Access management" — no numbering/prefix.' },
+          description: { type: 'STRING', description: '1-2 sentence summary of what this Epic covers.' },
+          userStories: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                name: { type: 'STRING', description: 'Short User Story title, e.g. "Login system" — no numbering/prefix.' },
+                description: { type: 'STRING', description: '1-2 sentence summary of this User Story, from the document.' },
+                task: { type: 'OBJECT', properties: TASK_SCHEMA_PROPERTIES, required: TASK_SCHEMA_REQUIRED },
+              },
+              required: ['name', 'task'],
             },
           },
         },
@@ -104,6 +174,58 @@ Guidelines:
 - Give every Task realistic points (Fibonacci-ish: 1,2,3,5,8,13), estimateHours, and complexity (1-5).
 Respond with only the JSON object matching the given schema — no other text.`;
 
+const DOCUMENT_SYSTEM_PROMPT = `You are a senior technical project manager. You are given the extracted text of a requirements document that already describes a project's Epics and User Stories (possibly under different headings, e.g. "Feature" or "Requirement").
+
+Your job:
+- Identify every Epic (a major capability area) and, under each, every User Story it describes.
+- For each User Story, produce exactly ONE Task that implements it — the Task is that Story's single concrete deliverable, not a further breakdown into multiple sub-tasks.
+- Epic/Story/Task names are short titles only — never include numbering or bracketed codes like "[Epic-1]"; that is added separately.
+- Give the Task realistic points (Fibonacci-ish: 1,2,3,5,8,13), estimateHours, and complexity (1-5).
+- If the document has no clear Epic groupings, group the User Stories you find into sensible Epics yourself.
+Respond with only the JSON object matching the given schema — no other text.`;
+
+const MATCH_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    epicMatches: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          generatedEpicName: { type: 'STRING' },
+          matchedExistingKey: { type: 'STRING', nullable: true, description: 'Key of the existing Epic with the same meaning, or null if there is no confident match.' },
+          matchedExistingName: { type: 'STRING', nullable: true },
+          reason: { type: 'STRING', description: 'One sentence explaining the match, or why there is none.' },
+        },
+        required: ['generatedEpicName', 'reason'],
+      },
+    },
+    storyMatches: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          generatedStoryName: { type: 'STRING' },
+          matchedExistingKey: { type: 'STRING', nullable: true, description: 'Key of the existing User Story with the same meaning, or null if there is no confident match.' },
+          matchedExistingName: { type: 'STRING', nullable: true },
+          reason: { type: 'STRING', description: 'One sentence explaining the match, or why there is none.' },
+        },
+        required: ['generatedStoryName', 'reason'],
+      },
+    },
+  },
+  required: ['epicMatches', 'storyMatches'],
+};
+
+const MATCH_SYSTEM_PROMPT = `You compare a freshly-generated Agile backlog against a Jira project's EXISTING Epics and User Stories, to find items that describe the same underlying capability even when worded differently (e.g. "Audit Log List and Filtering" and "Audit trail search and filters" are the same capability).
+
+For every generated Epic and every generated User Story given, decide whether one of the existing items listed represents the same underlying capability/story:
+- If yes, return that existing item's exact key and name.
+- If no confident match, return null for both key and name.
+- Only match when you are genuinely confident they mean the same thing — sharing a topic area is not enough on its own.
+- Always give a one-sentence reason, whether or not you found a match.
+Respond with only the JSON object matching the given schema — no other text.`;
+
 @Injectable()
 export class BacklogGeneratorService {
   private readonly logger = new Logger(BacklogGeneratorService.name);
@@ -114,22 +236,153 @@ export class BacklogGeneratorService {
     private readonly configService: ConfigService,
     private readonly employeesService: EmployeesService,
     private readonly projectsService: ProjectsService,
+    private readonly jiraService: JiraService,
   ) {}
 
   async generate(dto: GenerateBacklogDto): Promise<BacklogGeneratorResult> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+    const backlog = await this.callGemini(apiKey, model, SYSTEM_PROMPT, BACKLOG_RESPONSE_SCHEMA, dto.description);
+    if (backlog.epics.length === 0) {
+      throw new BadRequestException('The generated backlog came back empty — try a more detailed description.');
+    }
+    return this.persistBacklog(dto.projectName, backlog);
+  }
+
+  /**
+   * Extracts a .docx's text and asks Gemini to identify its Epics/User
+   * Stories (one Task per Story — see DOCUMENT_BACKLOG_RESPONSE_SCHEMA), but
+   * does NOT save anything locally — this just returns the structure for
+   * the Admin to review before deciding whether to push it to Jira via
+   * pushGeneratedBacklogToJira.
+   */
+  async previewFromDocument(documentBuffer: Buffer): Promise<GeneratedBacklog> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+
+    const { value: documentText } = await mammoth.extractRawText({ buffer: documentBuffer });
+    if (documentText.trim().length < 20) {
+      throw new BadRequestException('Could not extract readable text from this document — is it a valid .docx file?');
+    }
+
+    const backlog = await this.callGemini(apiKey, model, DOCUMENT_SYSTEM_PROMPT, DOCUMENT_BACKLOG_RESPONSE_SCHEMA, documentText, true);
+    if (backlog.epics.length === 0) {
+      throw new BadRequestException('Could not find any Epics/User Stories in this document — try a more detailed one.');
+    }
+    return backlog;
+  }
+
+  /**
+   * Creates every Epic -> User Story -> Task in `backlog` directly in real
+   * Jira, in order, so each child's Jira `parent` is already known by the
+   * time it's created. Nothing is saved locally first — this is the
+   * document-import flow's whole point (review, then push straight to
+   * Jira, no local TaskRecord). A parent that fails to create causes its
+   * children to be skipped rather than sent with a dangling reference.
+   *
+   * Epics and User Stories are looked up by name in the target Jira
+   * project first (see JiraService.findExistingIssueKeyByName) — an
+   * existing match is reused instead of creating a duplicate, so pushing
+   * the same document (or an overlapping one) more than once doesn't pile
+   * up repeat Epics/Stories. Tasks are always created fresh; they're the
+   * actual work item this whole flow exists to add.
+   */
+  async pushGeneratedBacklogToJira(jiraProjectKey: string, backlog: GeneratedBacklog): Promise<GeneratedBacklogPushSummary> {
+    const rows: GeneratedBacklogPushRow[] = [];
+
+    for (const epic of backlog.epics) {
+      const epicKey = await this.resolveOrCreateGeneratedIssue(jiraProjectKey, rows, epic.name, 'Epic');
+      for (const story of epic.userStories ?? []) {
+        await this.pushGeneratedStory(jiraProjectKey, rows, story, epicKey);
+      }
+    }
+
+    const pushed = rows.filter((r) => r.outcome === 'pushed' || r.outcome === 'already_exists').length;
+    const failed = rows.length - pushed;
+    this.logger.log(`Pushed a generated (document-import) backlog to Jira project ${jiraProjectKey}: ${pushed} pushed, ${failed} failed`);
+
+    return { jiraProjectKey, totalItems: rows.length, pushed, failed, rows };
+  }
+
+  /** One User Story and its (exactly one, by construction) Task — skipped without calling Jira when the Epic above it never got a key. */
+  private async pushGeneratedStory(
+    jiraProjectKey: string,
+    rows: GeneratedBacklogPushRow[],
+    story: GeneratedStory,
+    epicKey: string | null,
+  ): Promise<void> {
+    if (!epicKey) {
+      this.skipGeneratedIssue(rows, story.name, 'Story', 'Skipped — its Epic failed to push.');
+      story.tasks.forEach((task) => this.skipGeneratedIssue(rows, task.name, 'Task', 'Skipped — its Epic failed to push.'));
+      return;
+    }
+
+    const storyKey = await this.resolveOrCreateGeneratedIssue(jiraProjectKey, rows, story.name, 'Story', epicKey);
+    for (const task of story.tasks) {
+      if (!storyKey) {
+        this.skipGeneratedIssue(rows, task.name, 'Task', 'Skipped — its User Story failed to push.');
+        continue;
+      }
+      await this.pushOneGeneratedIssue(jiraProjectKey, rows, task.name, 'Task', storyKey, {
+        description: task.description,
+        storyPoints: task.points > 0 ? task.points : undefined,
+      });
+    }
+  }
+
+  /** Epic/Story only: reuses an existing Jira issue with this name in the project if one exists, otherwise creates it. */
+  private async resolveOrCreateGeneratedIssue(
+    jiraProjectKey: string,
+    rows: GeneratedBacklogPushRow[],
+    name: string,
+    issueType: 'Epic' | 'Story',
+    parentKey?: string,
+  ): Promise<string | null> {
+    const existingKey = await this.jiraService.findExistingIssueKeyByName(jiraProjectKey, issueType, name);
+    if (existingKey) {
+      rows.push({ name, issueType, outcome: 'already_exists', jiraIssueKey: existingKey, errorMessage: null });
+      return existingKey;
+    }
+    return this.pushOneGeneratedIssue(jiraProjectKey, rows, name, issueType, parentKey);
+  }
+
+  /** Creates one issue in Jira and records its row; returns the new key (or null on failure) for the caller to use as the next level's parent. */
+  private async pushOneGeneratedIssue(
+    jiraProjectKey: string,
+    rows: GeneratedBacklogPushRow[],
+    name: string,
+    issueType: GeneratedIssueType,
+    parentKey?: string,
+    extra: { description?: string; storyPoints?: number } = {},
+  ): Promise<string | null> {
+    const result = await this.jiraService.createIssue({ projectKey: jiraProjectKey, summary: name, issueType, parentKey, ...extra });
+    rows.push({
+      name,
+      issueType,
+      outcome: result.success ? 'pushed' : 'failed',
+      jiraIssueKey: result.issueKey,
+      errorMessage: result.errorMessage,
+      ...(result.droppedFields ? { droppedFields: result.droppedFields } : {}),
+    });
+    return result.success ? result.issueKey : null;
+  }
+
+  /** Records a row for something never attempted because its parent failed, without calling Jira. */
+  private skipGeneratedIssue(rows: GeneratedBacklogPushRow[], name: string, issueType: GeneratedIssueType, reason: string): void {
+    rows.push({ name, issueType, outcome: 'skipped_parent_failed', jiraIssueKey: null, errorMessage: reason });
+  }
+
+  private resolveGeminiConfig(): { apiKey: string; model: string } {
     const apiKey = this.configService.get<string>('GEMINI_API_KEY');
     if (!apiKey) {
       throw new BadRequestException('Set GEMINI_API_KEY in the backend .env to enable the Backlog Generator.');
     }
     const model = this.configService.get<string>('GEMINI_MODEL') || 'gemini-flash-latest';
+    return { apiKey, model };
+  }
 
-    const backlog = await this.callGemini(apiKey, model, dto.description);
-    if (backlog.epics.length === 0) {
-      throw new BadRequestException('The generated backlog came back empty — try a more detailed description.');
-    }
-
-    const existingProject = await this.projectsService.findByName(dto.projectName);
-    const project = existingProject ?? (await this.projectsService.upsertProject(dto.projectName, {}));
+  /** Shared by generate() and generateFromDocument(): saves every Epic/Story/Task as a real TaskRecord and builds the Markdown document. */
+  private async persistBacklog(projectName: string, backlog: GeneratedBacklog): Promise<BacklogGeneratorResult> {
+    const existingProject = await this.projectsService.findByName(projectName);
+    const project = existingProject ?? (await this.projectsService.upsertProject(projectName, {}));
     const employeeId = await this.resolveUnassignedGeneratedPlaceholderEmployeeId();
 
     let epicsCreated = 0;
@@ -137,12 +390,12 @@ export class BacklogGeneratorService {
     let tasksCreated = 0;
     let totalPoints = 0;
     let totalEstimateHours = 0;
-    const docLines: string[] = [`# ${dto.projectName} — Generated Backlog`, ''];
+    const docLines: string[] = [`# ${projectName} — Generated Backlog`, ''];
 
     // The frontend's Task Management tree nests children by matching a Story/Task's epicKey/storyKey against
     // its parent's own jiraIssueKey (the same field real Jira-synced data uses) — never against taskCode. These
     // rows have no real Jira issue, so each Epic/Story is given its own synthetic-but-unique jiraIssueKey here,
-    // scoped by a per-run token so two separate generate() calls never collide on the same value.
+    // scoped by a per-run token so two separate generation calls never collide on the same value.
     const runToken = randomBytes(4).toString('hex');
 
     for (const [epicIndex, epic] of backlog.epics.entries()) {
@@ -283,18 +536,60 @@ export class BacklogGeneratorService {
     return created.id;
   }
 
-  private async callGemini(apiKey: string, model: string, description: string): Promise<GeneratedBacklog> {
+  /**
+   * Calls Gemini's structured-output endpoint and returns a GeneratedBacklog.
+   * When `singleTaskPerStory` is set (the document-import schema, where each
+   * User Story carries one `task` object instead of a `tasks` array), each
+   * story's singular task is wrapped into a one-element array so every
+   * caller downstream (persistBacklog) sees the same GeneratedBacklog shape.
+   */
+  private async callGemini(
+    apiKey: string,
+    model: string,
+    systemPrompt: string,
+    responseSchema: unknown,
+    sourceText: string,
+    singleTaskPerStory = false,
+  ): Promise<GeneratedBacklog> {
+    const parsed = await this.callGeminiJson(apiKey, model, systemPrompt, responseSchema, sourceText);
+
+    if (!singleTaskPerStory) {
+      return parsed as GeneratedBacklog;
+    }
+
+    const documentShaped = parsed as {
+      epics: Array<{
+        name: string;
+        description?: string;
+        userStories: Array<{ name: string; description?: string; task: GeneratedTask }>;
+      }>;
+    };
+    return {
+      epics: documentShaped.epics.map((epic) => ({
+        name: epic.name,
+        description: epic.description,
+        userStories: (epic.userStories ?? []).map((story) => ({
+          name: story.name,
+          description: story.description,
+          tasks: story.task ? [story.task] : [],
+        })),
+      })),
+    };
+  }
+
+  /** The bare Gemini structured-output call, shared by callGemini() and suggestExistingMatches() — hits the API, unwraps the response, JSON.parses the text part. Callers cast the result to whatever shape their own responseSchema describes. */
+  private async callGeminiJson(apiKey: string, model: string, systemPrompt: string, responseSchema: unknown, sourceText: string): Promise<unknown> {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ role: 'user', parts: [{ text: description }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ role: 'user', parts: [{ text: sourceText }] }],
           generationConfig: {
             responseMimeType: 'application/json',
-            responseSchema: BACKLOG_RESPONSE_SCHEMA,
+            responseSchema,
           },
         }),
       },
@@ -309,12 +604,67 @@ export class BacklogGeneratorService {
     };
     const text = body.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) {
-      throw new BadRequestException('Gemini did not return a structured backlog — try again.');
+      throw new BadRequestException('Gemini did not return a structured response — try again.');
     }
+
     try {
-      return JSON.parse(text) as GeneratedBacklog;
+      return JSON.parse(text);
     } catch {
       throw new BadRequestException('Gemini returned malformed JSON — try again.');
     }
+  }
+
+  /**
+   * Compares the freshly-generated Epics/User Stories against what already
+   * exists in `jiraProjectKey`, so the Admin can map a generated one onto
+   * an existing item instead of always creating something new — matching
+   * on meaning, not just exact text, since "Audit Log List and Filtering"
+   * and "Audit trail search and filters" describe the same capability with
+   * different words. Read-only: no Jira write, nothing renamed here — the
+   * caller decides what to do with the suggestions.
+   */
+  async suggestExistingMatches(jiraProjectKey: string, backlog: GeneratedBacklog): Promise<MatchSuggestionResult> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+    const existing = await this.jiraService.listEpicsAndStories(jiraProjectKey);
+    const existingEpics = existing.filter((e) => e.issueType === 'Epic');
+    const existingStories = existing.filter((e) => e.issueType === 'Story');
+
+    if (existingEpics.length === 0 && existingStories.length === 0) {
+      return { epicMatches: [], storyMatches: [] };
+    }
+
+    const prompt = this.buildMatchPrompt(backlog, existingEpics, existingStories);
+    const parsed = (await this.callGeminiJson(apiKey, model, MATCH_SYSTEM_PROMPT, MATCH_RESPONSE_SCHEMA, prompt)) as MatchSuggestionResult;
+    return {
+      epicMatches: parsed.epicMatches ?? [],
+      storyMatches: parsed.storyMatches ?? [],
+    };
+  }
+
+  private buildMatchPrompt(
+    backlog: GeneratedBacklog,
+    existingEpics: Array<{ key: string; name: string }>,
+    existingStories: Array<{ key: string; name: string }>,
+  ): string {
+    const generatedEpicLines = backlog.epics.map((e, i) => `${i + 1}. ${e.name}${e.description ? ` — ${e.description}` : ''}`);
+    const generatedStoryLines = backlog.epics.flatMap((epic) =>
+      (epic.userStories ?? []).map((s, i) => `${i + 1}. ${s.name} (under Epic "${epic.name}")${s.description ? ` — ${s.description}` : ''}`),
+    );
+    const existingEpicLines = existingEpics.map((e) => `${e.key}: ${e.name}`);
+    const existingStoryLines = existingStories.map((s) => `${s.key}: ${s.name}`);
+
+    return [
+      'GENERATED EPICS:',
+      generatedEpicLines.join('\n') || '(none)',
+      '',
+      'GENERATED USER STORIES:',
+      generatedStoryLines.join('\n') || '(none)',
+      '',
+      'EXISTING JIRA EPICS (key: name):',
+      existingEpicLines.join('\n') || '(none)',
+      '',
+      'EXISTING JIRA USER STORIES (key: name):',
+      existingStoryLines.join('\n') || '(none)',
+    ].join('\n');
   }
 }

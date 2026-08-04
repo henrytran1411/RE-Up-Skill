@@ -817,18 +817,15 @@ export function AdminPage() {
                     { title: 'Type', render: (_, r: JiraProjectPushRow) => r.issueType ?? '—' },
                     {
                       title: 'Result',
-                      render: (_, r: JiraProjectPushRow) => {
-                        if (r.outcome === 'pushed') {
-                          return <Tag color="green">Pushed: {r.jiraIssueKey}</Tag>;
-                        }
-                        if (r.outcome === 'already_in_jira') {
-                          return <Tag color="blue">Already in Jira: {r.jiraIssueKey}</Tag>;
-                        }
-                        if (r.outcome === 'skipped_parent_failed') {
-                          return <Tag>Skipped (parent failed)</Tag>;
-                        }
-                        return <Tag color="red">{r.errorMessage}</Tag>;
-                      },
+                      render: (_, r: JiraProjectPushRow) => (
+                        <Space>
+                          {r.outcome === 'pushed' && <Tag color="green">Pushed: {r.jiraIssueKey}</Tag>}
+                          {r.outcome === 'already_in_jira' && <Tag color="blue">Already in Jira: {r.jiraIssueKey}</Tag>}
+                          {r.outcome === 'skipped_parent_failed' && <Tag>Skipped (parent failed)</Tag>}
+                          {r.outcome === 'failed' && <Tag color="red">{r.errorMessage}</Tag>}
+                          {r.droppedFields && <Tag color="gold">Dropped: {r.droppedFields.join(', ')}</Tag>}
+                        </Space>
+                      ),
                     },
                   ]}
                 />

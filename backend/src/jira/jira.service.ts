@@ -178,6 +178,8 @@ export interface JiraCreateIssueResult {
   input: { projectKey: string; summary: string };
   /** Set only for bulk CSV rows — the 1-indexed row in the uploaded file (header row is row 1), for matching a failure back to the file. */
   rowNumber?: number;
+  /** Set only when the create still succeeded but Jira rejected one or more optional fields as invalid for this project/screen (e.g. the story-points custom field not being on the create screen) — those fields were dropped and the issue was created without them. */
+  droppedFields?: string[];
 }
 
 /** One TaskRecord's outcome when pushing a whole local project to Jira. */
@@ -188,6 +190,8 @@ export interface JiraProjectPushRow {
   outcome: 'pushed' | 'already_in_jira' | 'failed' | 'skipped_parent_failed';
   jiraIssueKey: string | null;
   errorMessage: string | null;
+  /** Optional fields Jira rejected for this project/screen and that were dropped so the create could still succeed — see JiraCreateIssueResult.droppedFields. */
+  droppedFields?: string[];
 }
 
 export interface JiraProjectPushSummary {
@@ -1248,6 +1252,93 @@ export class JiraService {
     return summary;
   }
 
+  /**
+   * Looks for an existing Epic/Story in `jiraProjectKey` whose summary
+   * matches `summary` — used by the document-import push flow so re-running
+   * it against the same Jira project doesn't create duplicate Epics/User
+   * Stories every time. Jira's JQL has no exact-equals operator for text
+   * fields, so this does a phrase search (`summary ~ "..."`) and then
+   * confirms a real case-insensitive match against the candidates it
+   * returns, rather than trusting Jira's looser phrase matching alone.
+   * Returns null (never throws) on no match, no connection, or a failed
+   * lookup — a search hiccup should not block creating the issue.
+   */
+  async findExistingIssueKeyByName(jiraProjectKey: string, issueType: 'Epic' | 'Story', summary: string): Promise<string | null> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      return null;
+    }
+    try {
+      const baseUrl = connection.baseUrl.replace(/\/$/, '');
+      const escapedProject = jiraProjectKey.replace(/"/g, '\\"');
+      const escapedSummary = summary.replace(/"/g, '\\"');
+      const jql = `project = "${escapedProject}" AND issuetype = "${issueType}" AND summary ~ "\\"${escapedSummary}\\""`;
+      const params = new URLSearchParams({ jql, maxResults: '10', fields: 'summary' });
+      const response = await fetch(`${baseUrl}/rest/api/3/search/jql?${params.toString()}`, {
+        headers: { Authorization: this.authHeader(connection), Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        this.logger.warn(`Existing-issue lookup failed (${response.status}) for "${summary}" — will create instead of skipping.`);
+        return null;
+      }
+      const page = (await response.json()) as { issues: Array<{ key: string; fields: { summary: string } }> };
+      const match = page.issues.find((issue) => issue.fields.summary.trim().toLowerCase() === summary.trim().toLowerCase());
+      return match?.key ?? null;
+    } catch (err) {
+      this.logger.warn(`Existing-issue lookup errored for "${summary}": ${err instanceof Error ? err.message : err} — will create instead of skipping.`);
+      return null;
+    }
+  }
+
+  /**
+   * Every Epic and User Story currently in `jiraProjectKey` — used by the
+   * document-import flow's "suggest matches" step to compare freshly
+   * generated Epics/Stories against what's already in the target Jira
+   * project, so the Admin can map a generated one onto an existing one
+   * instead of always creating something new. Throws (rather than
+   * swallowing, unlike findExistingIssueKeyByName) since a failed fetch
+   * here means the whole matching step has nothing to compare against.
+   */
+  async listEpicsAndStories(jiraProjectKey: string): Promise<Array<{ key: string; name: string; issueType: 'Epic' | 'Story' }>> {
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) first.');
+    }
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    const escapedProject = jiraProjectKey.replace(/"/g, '\\"');
+    const jql = `project = "${escapedProject}" AND issuetype in ("Epic", "Story") order by created asc`;
+
+    const results: Array<{ key: string; name: string; issueType: 'Epic' | 'Story' }> = [];
+    let nextPageToken: string | undefined;
+    for (;;) {
+      const params = new URLSearchParams({ jql, maxResults: String(MAX_RESULTS_PER_PAGE), fields: 'summary,issuetype' });
+      if (nextPageToken) {
+        params.set('nextPageToken', nextPageToken);
+      }
+      const response = await fetch(`${baseUrl}/rest/api/3/search/jql?${params.toString()}`, {
+        headers: { Authorization: this.authHeader(connection), Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        throw new BadRequestException(`Jira search failed (${response.status}): ${await response.text()}`);
+      }
+      const page = (await response.json()) as {
+        issues: Array<{ key: string; fields: { summary: string; issuetype: { name: string } } }>;
+        nextPageToken?: string;
+        isLast: boolean;
+      };
+      for (const issue of page.issues) {
+        if (issue.fields.issuetype.name === 'Epic' || issue.fields.issuetype.name === 'Story') {
+          results.push({ key: issue.key, name: issue.fields.summary, issueType: issue.fields.issuetype.name });
+        }
+      }
+      if (page.isLast || page.issues.length === 0 || !page.nextPageToken) {
+        break;
+      }
+      nextPageToken = page.nextPageToken;
+    }
+    return results;
+  }
+
   /** Creates one brand-new issue in real Jira — this is a live, visible write, unlike every other method in this service. */
   async createIssue(dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
     const connection = await this.resolveConnection();
@@ -1270,6 +1361,28 @@ export class JiraService {
     }
     return results;
   }
+
+  /**
+   * projectKey/summary/issuetype are the only fields Jira always requires —
+   * everything else this service optionally sets (assignee, parent,
+   * description, the story-points custom field) varies by project/screen
+   * configuration and can come back as "cannot be set. It is not on the
+   * appropriate screen, or unknown." This project's create screen not
+   * having the story-points field configured (seen on MER and NS) is the
+   * common case, but the same shape covers a rejected parent/assignee too
+   * — including a Jira Cloud plan-tier gate ("You need to have Premium
+   * subscription to set parent to a work item of this type", seen nesting
+   * a Task under a Story on NS, a Free/Standard-plan site — this is a
+   * billing restriction Atlassian enforces site-wide, not a token/permission
+   * problem, and no request can override it). Rather than failing the
+   * whole create over one such field, this drops exactly the field(s)
+   * Jira names in its error and retries — bounded by the number of
+   * optional fields, so it can't loop forever.
+   */
+  private static readonly CORE_ISSUE_FIELDS = new Set(['project', 'summary', 'issuetype']);
+
+  /** Jira's validation errors sometimes name a field by its internal system name rather than the request key that set it — e.g. rejecting `parent` comes back keyed as `parentId`. */
+  private static readonly FIELD_ERROR_ALIASES: Record<string, string> = { parentId: 'parent' };
 
   private async createIssueWithConnection(connection: JiraConnection, dto: CreateJiraIssueDto): Promise<JiraCreateIssueResult> {
     const input = { projectKey: dto.projectKey, summary: dto.summary };
@@ -1302,25 +1415,66 @@ export class JiraService {
     }
 
     const baseUrl = connection.baseUrl.replace(/\/$/, '');
-    try {
-      const response = await fetch(`${baseUrl}/rest/api/3/issue`, {
-        method: 'POST',
-        headers: {
-          Authorization: this.authHeader(connection),
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ fields }),
-      });
-      if (!response.ok) {
-        return { success: false, issueKey: null, errorMessage: `Jira create failed (${response.status}): ${await response.text()}`, input };
+    const droppedFields: string[] = [];
+    const maxAttempts = Object.keys(fields).length - JiraService.CORE_ISSUE_FIELDS.size + 1;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const response = await fetch(`${baseUrl}/rest/api/3/issue`, {
+          method: 'POST',
+          headers: {
+            Authorization: this.authHeader(connection),
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ fields }),
+        });
+
+        if (response.ok) {
+          const created = (await response.json()) as { key: string };
+          this.logger.log(
+            `Created Jira issue ${created.key} in project ${dto.projectKey}${droppedFields.length > 0 ? ` (dropped: ${droppedFields.join(', ')})` : ''}`,
+          );
+          return {
+            success: true,
+            issueKey: created.key,
+            errorMessage: null,
+            input,
+            ...(droppedFields.length > 0 ? { droppedFields } : {}),
+          };
+        }
+
+        const bodyText = await response.text();
+        let removedAny = false;
+        try {
+          const parsedError = JSON.parse(bodyText) as { errors?: Record<string, string> };
+          for (const rawKey of Object.keys(parsedError.errors ?? {})) {
+            const key = JiraService.FIELD_ERROR_ALIASES[rawKey] ?? rawKey;
+            if (key in fields && !JiraService.CORE_ISSUE_FIELDS.has(key)) {
+              delete fields[key];
+              droppedFields.push(key);
+              removedAny = true;
+            }
+          }
+        } catch {
+          // Not a JSON error body — nothing to self-heal from, fall through to the failure below.
+        }
+
+        if (!removedAny) {
+          return { success: false, issueKey: null, errorMessage: `Jira create failed (${response.status}): ${bodyText}`, input };
+        }
+        // Retry with the offending field(s) removed.
+      } catch (err) {
+        return { success: false, issueKey: null, errorMessage: err instanceof Error ? err.message : 'Unknown error creating the issue', input };
       }
-      const created = (await response.json()) as { key: string };
-      this.logger.log(`Created Jira issue ${created.key} in project ${dto.projectKey}`);
-      return { success: true, issueKey: created.key, errorMessage: null, input };
-    } catch (err) {
-      return { success: false, issueKey: null, errorMessage: err instanceof Error ? err.message : 'Unknown error creating the issue', input };
     }
+
+    return {
+      success: false,
+      issueKey: null,
+      errorMessage: `Jira create failed even after dropping ${droppedFields.join(', ')}.`,
+      input,
+    };
   }
 
   /**
@@ -1457,6 +1611,7 @@ export class JiraService {
           outcome: 'pushed',
           jiraIssueKey: result.issueKey,
           errorMessage: null,
+          ...(result.droppedFields ? { droppedFields: result.droppedFields } : {}),
         });
         return result.issueKey;
       }
