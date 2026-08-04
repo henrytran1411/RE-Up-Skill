@@ -19,6 +19,17 @@ const DOCX_UPLOAD_OPTIONS = {
   },
 };
 
+const PDF_UPLOAD_OPTIONS = {
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req: unknown, file: Express.Multer.File, callback: (error: Error | null, accept: boolean) => void) => {
+    if (file.mimetype !== 'application/pdf' && !file.originalname.toLowerCase().endsWith('.pdf')) {
+      callback(new BadRequestException('Only .pdf files are supported'), false);
+      return;
+    }
+    callback(null, true);
+  },
+};
+
 @Controller('backlog-generator')
 @Roles(Role.ADMIN, Role.PM, Role.TECH_LEAD)
 export class BacklogGeneratorController {
@@ -54,6 +65,26 @@ export class BacklogGeneratorController {
   @Post('preview-from-jira-link')
   previewFromJiraLink(@Body() dto: PreviewFromJiraLinkDto) {
     return this.backlogGeneratorService.previewFromJiraLink(dto.jiraLink);
+  }
+
+  /**
+   * The "Generate from Description" flow's overview step: turns a project-level
+   * description — fetched live from a Jira issue or Confluence page link — into
+   * Epics and User Stories only (no Tasks). Nothing is saved locally.
+   */
+  @Post('preview-overview-from-link')
+  previewOverviewFromLink(@Body() dto: PreviewFromJiraLinkDto) {
+    return this.backlogGeneratorService.previewOverviewFromJiraLink(dto.jiraLink);
+  }
+
+  /** Same as preview-overview-from-link, but the source is an uploaded PDF's extracted text instead of a link. */
+  @Post('preview-overview-from-pdf')
+  @UseInterceptors(FileInterceptor('file', PDF_UPLOAD_OPTIONS))
+  previewOverviewFromPdf(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('A .pdf file is required');
+    }
+    return this.backlogGeneratorService.previewOverviewFromPdf(file.buffer);
   }
 
   /**

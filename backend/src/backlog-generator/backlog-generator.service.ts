@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
 import * as mammoth from 'mammoth';
+import pdfParse from 'pdf-parse';
 import { TaskRecord } from '../tasks/entities/task-record.entity';
 import { TaskStatus } from '../common/enums/task-status.enum';
 import { EmployeesService } from '../employees/employees.service';
@@ -197,6 +198,46 @@ Your job:
 - If the document has no clear Epic groupings, group the User Stories you find into sensible Epics yourself.
 Respond with only the JSON object matching the given schema — no other text.`;
 
+/** Same Epic/User Story shape as the other schemas, but with no Task level at all — the "Generate from Description" flow's overview-only generation (project-level description in, Epics + User Stories out). */
+const OVERVIEW_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    epics: {
+      type: 'ARRAY',
+      description: 'Every Epic (major capability area) for this project, in a sensible delivery order.',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING', description: 'Short Epic title, e.g. "Access management" — no numbering/prefix.' },
+          description: { type: 'STRING', description: '1-2 sentence summary of what this Epic covers.' },
+          userStories: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                name: { type: 'STRING', description: 'Short User Story title, e.g. "Login system" — no numbering/prefix.' },
+                description: { type: 'STRING', description: '1-2 sentence summary of this User Story.' },
+              },
+              required: ['name'],
+            },
+          },
+        },
+        required: ['name', 'userStories'],
+      },
+    },
+  },
+  required: ['epics'],
+};
+
+const OVERVIEW_SYSTEM_PROMPT = `You are a senior technical project manager. Given a project description (extracted from a Jira issue, a Confluence page, or a PDF), produce a project OVERVIEW: every Epic (major capability area) and, under each, every User Story it should contain.
+
+Guidelines:
+- Cover the whole description; don't leave out a major capability it mentions.
+- Typically 3-8 Epics, 2-6 User Stories per Epic — adjust to fit the description's actual scope, don't pad.
+- This is an overview only — do NOT break User Stories down into Tasks.
+- Epic/Story names are short titles only — never include numbering or bracketed codes like "[Epic-1]"; that is added separately.
+Respond with only the JSON object matching the given schema — no other text.`;
+
 const MATCH_RESPONSE_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -303,6 +344,54 @@ export class BacklogGeneratorService {
       throw new BadRequestException('Could not find any Epics/User Stories in that Jira issue — try a more detailed one.');
     }
     return backlog;
+  }
+
+  /**
+   * The "Generate from Description" flow's overview generation: a project-level
+   * description (fetched from a Jira issue or Confluence page, or extracted
+   * from an uploaded PDF) becomes Epics and User Stories only — no Tasks.
+   * Nothing is saved locally; review, then push to Jira via
+   * pushGeneratedBacklogToJira (an empty tasks[] on every story there is a
+   * no-op, so the same push path works unchanged for this Epic/Story-only case).
+   */
+  async previewOverviewFromJiraLink(jiraLink: string): Promise<GeneratedBacklog> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+    const sourceText = await this.jiraService.fetchIssueContentByLink(jiraLink);
+    if (sourceText.trim().length < 20) {
+      throw new BadRequestException('Could not extract enough content from that link — does it have a description?');
+    }
+    return this.generateOverview(apiKey, model, sourceText, 'that link');
+  }
+
+  /** Same as previewOverviewFromJiraLink, but the source is an uploaded PDF's extracted text. */
+  async previewOverviewFromPdf(pdfBuffer: Buffer): Promise<GeneratedBacklog> {
+    const { apiKey, model } = this.resolveGeminiConfig();
+    const { text } = await pdfParse(pdfBuffer);
+    if (text.trim().length < 20) {
+      throw new BadRequestException('Could not extract readable text from this PDF — is it a text-based (not scanned-image) PDF?');
+    }
+    return this.generateOverview(apiKey, model, text, 'this PDF');
+  }
+
+  private async generateOverview(apiKey: string, model: string, sourceText: string, sourceLabel: string): Promise<GeneratedBacklog> {
+    const raw = await this.callGemini(apiKey, model, OVERVIEW_SYSTEM_PROMPT, OVERVIEW_RESPONSE_SCHEMA, sourceText);
+    if (raw.epics.length === 0) {
+      throw new BadRequestException(`Could not find any Epics/User Stories in ${sourceLabel} — try a more detailed one.`);
+    }
+    // The overview schema has no Task level at all, so Gemini's raw output has no `tasks` key on a
+    // story — normalize to an explicit empty array so every downstream consumer of GeneratedBacklog
+    // (persistBacklog, pushGeneratedBacklogToJira, the frontend) sees the shape it already expects.
+    return {
+      epics: raw.epics.map((epic) => ({
+        name: epic.name,
+        description: epic.description,
+        userStories: (epic.userStories ?? []).map((story) => ({
+          name: story.name,
+          description: story.description,
+          tasks: [],
+        })),
+      })),
+    };
   }
 
   /**
