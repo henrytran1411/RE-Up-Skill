@@ -75,6 +75,13 @@ export interface JiraProjectPushSummary {
   rows: JiraProjectPushRow[];
 }
 
+/** One Epic or User Story already in a Jira project — used by the document-import flow's "list existing Epics/Stories" step. */
+export interface JiraEpicOrStory {
+  key: string;
+  name: string;
+  issueType: 'Epic' | 'Story';
+}
+
 export interface JiraSyncLog {
   id: string;
   startedAt: string;

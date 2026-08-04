@@ -3,6 +3,7 @@ import {
   CreateJiraIssuePayload,
   JiraConfigSummary,
   JiraCreateIssueResult,
+  JiraEpicOrStory,
   JiraProjectPushSummary,
   JiraProjectSummary,
   JiraProjectSyncSummary,
@@ -107,5 +108,11 @@ export async function createJiraIssuesBulk(projectKey: string, file: File): Prom
 /** Pushes every task in a local Project that isn't already in Jira into jiraProjectKey as real issues — a live, visible write. */
 export async function pushProjectToJira(projectName: string, jiraProjectKey: string): Promise<JiraProjectPushSummary> {
   const { data } = await apiClient.post<JiraProjectPushSummary>('/jira-sync/push-project', { projectName, jiraProjectKey });
+  return data;
+}
+
+/** Every Epic and User Story already in a Jira project — read-only. */
+export async function fetchJiraEpicsAndStories(jiraProjectKey: string): Promise<JiraEpicOrStory[]> {
+  const { data } = await apiClient.get<JiraEpicOrStory[]>(`/jira-sync/projects/${encodeURIComponent(jiraProjectKey)}/epics-and-stories`);
   return data;
 }

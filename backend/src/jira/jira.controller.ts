@@ -106,4 +106,16 @@ export class JiraController {
   pushProject(@Body() dto: PushProjectToJiraDto) {
     return this.jiraService.pushProjectTasksToJira(dto.projectName, dto.jiraProjectKey);
   }
+
+  /**
+   * Every Epic and User Story currently in a Jira project — read-only, so
+   * open to the same PM/Tech Lead/Admin audience as the Backlog Generator's
+   * document-import flow, overriding this controller's class-level
+   * Admin-only default (every other route here is a live Jira write).
+   */
+  @Get('projects/:projectKey/epics-and-stories')
+  @Roles(Role.ADMIN, Role.PM, Role.TECH_LEAD)
+  listEpicsAndStories(@Param('projectKey') projectKey: string) {
+    return this.jiraService.listEpicsAndStories(projectKey);
+  }
 }

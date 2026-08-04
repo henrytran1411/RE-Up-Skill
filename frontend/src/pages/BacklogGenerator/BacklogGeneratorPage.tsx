@@ -1,14 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Card, Space, Typography, Form, Input, InputNumber, Button, Alert, Row, Col, Statistic, Tag, Tabs, Upload, Select, Table, Modal } from 'antd';
 import axios from 'axios';
-import { FileTextOutlined, DownloadOutlined, ThunderboltOutlined, UploadOutlined, CloudSyncOutlined, SearchOutlined, EditOutlined } from '@ant-design/icons';
+import {
+  FileTextOutlined,
+  DownloadOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+  CloudSyncOutlined,
+  SearchOutlined,
+  EditOutlined,
+  DeleteOutlined,
+} from '@ant-design/icons';
 import {
   generateBacklog,
   previewBacklogFromDocument,
   pushGeneratedBacklogToJira,
   suggestExistingMatches,
 } from '../../services/backlogGeneratorService';
-import { fetchJiraProjects, pushProjectToJira } from '../../services/jiraService';
+import { fetchJiraEpicsAndStories, fetchJiraProjects, pushProjectToJira } from '../../services/jiraService';
 import {
   BacklogGeneratorResult,
   EpicMatch,
@@ -20,7 +29,7 @@ import {
   MatchSuggestionResult,
   StoryMatch,
 } from '../../types/backlogGenerator';
-import { JiraProjectPushRow, JiraProjectPushSummary, JiraProjectSummary } from '../../types/jira';
+import { JiraEpicOrStory, JiraProjectPushRow, JiraProjectPushSummary, JiraProjectSummary } from '../../types/jira';
 import { useAuth } from '../../context/AuthContext';
 import { Role } from '../../types/common';
 
@@ -245,10 +254,73 @@ function FromDescriptionForm({ onGenerated }: { readonly onGenerated: (result: B
   );
 }
 
+/**
+ * The doc-import review UI supports removing rows, which shifts array
+ * indices around — so every Epic/Story gets a stable client-only `_id`
+ * (never sent to the backend, see toPlainEpics) that all the tracking
+ * maps (mapped-to-existing tags, the detail modal target) key off of
+ * instead of a position that can silently drift after a removal.
+ */
+interface LocalStory extends GeneratedStory {
+  _id: string;
+}
+interface LocalEpic extends GeneratedEpic {
+  _id: string;
+  userStories: LocalStory[];
+}
+interface LocalBacklog {
+  epics: LocalEpic[];
+}
+
+function withLocalIds(backlog: GeneratedBacklog): LocalBacklog {
+  return {
+    epics: backlog.epics.map((epic) => ({
+      ...epic,
+      _id: crypto.randomUUID(),
+      userStories: (epic.userStories ?? []).map((story) => ({ ...story, _id: crypto.randomUUID() })),
+    })),
+  };
+}
+
+function toPlainEpics(epics: LocalEpic[]): GeneratedEpic[] {
+  return epics.map(({ _id, userStories, ...epicRest }) => ({
+    ...epicRest,
+    userStories: userStories.map(({ _id: storyId, ...storyRest }) => storyRest),
+  }));
+}
+
+/** [US-1.1]-style prefix already used elsewhere in this system for taskCode — matched here to derive a matching [Task-1.1.1] prefix once a generated Story is mapped onto an existing Jira Story that already follows the convention. */
+// Matches whatever dotted numbering a [US-...] prefix actually uses — e.g. this system's own two-part
+// [US-1.1] (Epic 1, Story 1) convention, but real Jira projects have also been seen using a single-number
+// [US-1] scheme instead. Either way the captured numbering is reused as-is, with a trailing task index appended.
+const US_PREFIX_REGEX = /^\[US-([\d.]+)\]/;
+const TASK_PREFIX_REGEX = /^\[Task-[\d.]+\]\s*/;
+
+/** Re-derives (idempotently — strips any prior [Task-...] prefix first) a Task's prefix from its Story's current [US-...] numbering, so it self-corrects if the Story gets (re)mapped or edited. No prefix is invented for a Story with no such numbering. */
+function deriveTaskName(storyName: string, taskName: string): string {
+  const bareName = taskName.replace(TASK_PREFIX_REGEX, '');
+  const match = storyName.match(US_PREFIX_REGEX);
+  if (!match) {
+    return bareName;
+  }
+  return `[Task-${match[1]}.1] ${bareName}`;
+}
+
+function syncTaskPrefixes(backlog: LocalBacklog): void {
+  backlog.epics.forEach((epic) => {
+    epic.userStories.forEach((story) => {
+      const task = story.tasks[0];
+      if (task) {
+        task.name = deriveTaskName(story.name, task.name);
+      }
+    });
+  });
+}
+
 interface FlatDocRow {
   key: string;
-  epicIndex: number;
-  storyIndex: number;
+  epicId: string;
+  storyId: string;
   epicName: string;
   storyName: string;
   taskName: string;
@@ -257,18 +329,18 @@ interface FlatDocRow {
   complexity: number;
 }
 
-function flattenBacklog(backlog: GeneratedBacklog): FlatDocRow[] {
+function flattenBacklog(backlog: LocalBacklog): FlatDocRow[] {
   const rows: FlatDocRow[] = [];
-  backlog.epics.forEach((epic, epicIndex) => {
-    (epic.userStories ?? []).forEach((story, storyIndex) => {
+  backlog.epics.forEach((epic) => {
+    epic.userStories.forEach((story) => {
       const task = (story.tasks ?? [])[0];
       if (!task) {
         return;
       }
       rows.push({
-        key: `${epicIndex}-${storyIndex}`,
-        epicIndex,
-        storyIndex,
+        key: story._id,
+        epicId: epic._id,
+        storyId: story._id,
         epicName: epic.name,
         storyName: story.name,
         taskName: task.name,
@@ -370,22 +442,25 @@ function FromDocumentForm() {
   const { currentEmployee } = useAuth();
   const isAdmin = currentEmployee?.role === Role.ADMIN;
 
+  const [jiraProjects, setJiraProjects] = useState<JiraProjectSummary[]>([]);
+  const [targetJiraKey, setTargetJiraKey] = useState<string | undefined>(undefined);
+  const [existingItems, setExistingItems] = useState<JiraEpicOrStory[]>([]);
+  const [loadingExisting, setLoadingExisting] = useState(false);
+  const [existingError, setExistingError] = useState<string | null>(null);
+
   const [file, setFile] = useState<File | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [backlog, setBacklog] = useState<GeneratedBacklog | null>(null);
-
-  const [jiraProjects, setJiraProjects] = useState<JiraProjectSummary[]>([]);
-  const [targetJiraKey, setTargetJiraKey] = useState<string | undefined>(undefined);
+  const [backlog, setBacklog] = useState<LocalBacklog | null>(null);
 
   const [checkingMatches, setCheckingMatches] = useState(false);
   const [matchError, setMatchError] = useState<string | null>(null);
   const [matchSuggestions, setMatchSuggestions] = useState<MatchSuggestionResult | null>(null);
   const [resolvedMatches, setResolvedMatches] = useState<Set<string>>(new Set());
-  const [mappedEpicKeys, setMappedEpicKeys] = useState<Record<number, string>>({});
+  const [mappedEpicKeys, setMappedEpicKeys] = useState<Record<string, string>>({});
   const [mappedStoryKeys, setMappedStoryKeys] = useState<Record<string, string>>({});
 
-  const [detailTarget, setDetailTarget] = useState<{ epicIndex: number; storyIndex: number } | null>(null);
+  const [detailTarget, setDetailTarget] = useState<{ epicId: string; storyId: string } | null>(null);
 
   const [pushing, setPushing] = useState(false);
   const [pushResult, setPushResult] = useState<GeneratedBacklogPushSummary | null>(null);
@@ -394,6 +469,30 @@ function FromDocumentForm() {
   useEffect(() => {
     fetchJiraProjects().catch(() => undefined).then((p) => p && setJiraProjects(p));
   }, []);
+
+  useEffect(() => {
+    if (!targetJiraKey) {
+      setExistingItems([]);
+      return;
+    }
+    setLoadingExisting(true);
+    setExistingError(null);
+    fetchJiraEpicsAndStories(targetJiraKey)
+      .then(setExistingItems)
+      .catch((err) => setExistingError(errorMessage(err, 'Failed to load existing Epics/User Stories from this project')))
+      .finally(() => setLoadingExisting(false));
+  }, [targetJiraKey]);
+
+  const handleSelectProject = (value: string) => {
+    setTargetJiraKey(value);
+    setBacklog(null);
+    setFile(null);
+    setMatchSuggestions(null);
+    setResolvedMatches(new Set());
+    setMappedEpicKeys({});
+    setMappedStoryKeys({});
+    setPushResult(null);
+  };
 
   const handleGenerate = async () => {
     if (!file) {
@@ -409,7 +508,8 @@ function FromDocumentForm() {
     setMappedEpicKeys({});
     setMappedStoryKeys({});
     try {
-      const preview = await previewBacklogFromDocument(file);
+      const preview = withLocalIds(await previewBacklogFromDocument(file));
+      syncTaskPrefixes(preview);
       setBacklog(preview);
     } catch (err) {
       setError(errorMessage(err, 'Failed to read Epics/User Stories from this document'));
@@ -423,7 +523,7 @@ function FromDocumentForm() {
     setCheckingMatches(true);
     setMatchError(null);
     try {
-      const result = await suggestExistingMatches(targetJiraKey, backlog.epics);
+      const result = await suggestExistingMatches(targetJiraKey, toPlainEpics(backlog.epics));
       setMatchSuggestions(result);
     } catch (err) {
       setMatchError(errorMessage(err, 'Failed to check for existing matches in Jira'));
@@ -432,24 +532,28 @@ function FromDocumentForm() {
     }
   };
 
-  const updateBacklog = (mutator: (draft: GeneratedBacklog) => void) => {
+  const updateBacklog = (mutator: (draft: LocalBacklog) => void) => {
     setBacklog((prev) => {
       if (!prev) return prev;
-      const next: GeneratedBacklog = JSON.parse(JSON.stringify(prev));
+      const next: LocalBacklog = JSON.parse(JSON.stringify(prev));
       mutator(next);
+      syncTaskPrefixes(next);
       return next;
     });
   };
 
   const acceptEpicMatch = (match: EpicMatch) => {
     if (!backlog || !match.matchedExistingKey || !match.matchedExistingName) return;
-    const epicIndex = backlog.epics.findIndex((e) => e.name === match.generatedEpicName);
-    if (epicIndex === -1) return;
+    const epic = backlog.epics.find((e) => e.name === match.generatedEpicName);
+    if (!epic) return;
+    const epicId = epic._id;
     const existingKey = match.matchedExistingKey;
+    const existingName = match.matchedExistingName;
     updateBacklog((draft) => {
-      draft.epics[epicIndex].name = match.matchedExistingName as string;
+      const target = draft.epics.find((e) => e._id === epicId);
+      if (target) target.name = existingName;
     });
-    setMappedEpicKeys((prev) => ({ ...prev, [epicIndex]: existingKey }));
+    setMappedEpicKeys((prev) => ({ ...prev, [epicId]: existingKey }));
     setResolvedMatches((prev) => new Set(prev).add(`epic:${match.generatedEpicName}`));
   };
 
@@ -457,24 +561,27 @@ function FromDocumentForm() {
     setResolvedMatches((prev) => new Set(prev).add(`epic:${match.generatedEpicName}`));
   };
 
-  const findStoryLocation = (name: string): { epicIndex: number; storyIndex: number } | null => {
+  const findStoryByName = (name: string): { epicId: string; storyId: string } | null => {
     if (!backlog) return null;
-    for (let epicIndex = 0; epicIndex < backlog.epics.length; epicIndex++) {
-      const storyIndex = backlog.epics[epicIndex].userStories.findIndex((s) => s.name === name);
-      if (storyIndex !== -1) return { epicIndex, storyIndex };
+    for (const epic of backlog.epics) {
+      const story = epic.userStories.find((s) => s.name === name);
+      if (story) return { epicId: epic._id, storyId: story._id };
     }
     return null;
   };
 
   const acceptStoryMatch = (match: StoryMatch) => {
     if (!match.matchedExistingKey || !match.matchedExistingName) return;
-    const location = findStoryLocation(match.generatedStoryName);
+    const location = findStoryByName(match.generatedStoryName);
     if (!location) return;
     const existingKey = match.matchedExistingKey;
+    const existingName = match.matchedExistingName;
     updateBacklog((draft) => {
-      draft.epics[location.epicIndex].userStories[location.storyIndex].name = match.matchedExistingName as string;
+      const epic = draft.epics.find((e) => e._id === location.epicId);
+      const story = epic?.userStories.find((s) => s._id === location.storyId);
+      if (story) story.name = existingName;
     });
-    setMappedStoryKeys((prev) => ({ ...prev, [`${location.epicIndex}-${location.storyIndex}`]: existingKey }));
+    setMappedStoryKeys((prev) => ({ ...prev, [location.storyId]: existingKey }));
     setResolvedMatches((prev) => new Set(prev).add(`story:${match.generatedStoryName}`));
   };
 
@@ -482,10 +589,11 @@ function FromDocumentForm() {
     setResolvedMatches((prev) => new Set(prev).add(`story:${match.generatedStoryName}`));
   };
 
-  const handleSaveDetail = (epicIndex: number, storyIndex: number, values: DetailFormValues) => {
+  const handleSaveDetail = (epicId: string, storyId: string, values: DetailFormValues) => {
     updateBacklog((draft) => {
-      const epic = draft.epics[epicIndex];
-      const story = epic.userStories[storyIndex];
+      const epic = draft.epics.find((e) => e._id === epicId);
+      const story = epic?.userStories.find((s) => s._id === storyId);
+      if (!epic || !story) return;
       epic.name = values.epicName;
       epic.description = values.epicDescription;
       story.name = values.storyName;
@@ -501,13 +609,21 @@ function FromDocumentForm() {
     });
   };
 
+  const removeRow = (epicId: string, storyId: string) => {
+    updateBacklog((draft) => {
+      const epic = draft.epics.find((e) => e._id === epicId);
+      if (!epic) return;
+      epic.userStories = epic.userStories.filter((s) => s._id !== storyId);
+    });
+  };
+
   const handleSubmit = async () => {
     if (!backlog || !targetJiraKey) return;
     setPushing(true);
     setPushError(null);
     setPushResult(null);
     try {
-      const result = await pushGeneratedBacklogToJira(targetJiraKey, backlog.epics);
+      const result = await pushGeneratedBacklogToJira(targetJiraKey, toPlainEpics(backlog.epics));
       setPushResult(result);
     } catch (err) {
       setPushError(errorMessage(err, 'Failed to push the reviewed tasks to Jira'));
@@ -523,64 +639,84 @@ function FromDocumentForm() {
   const pendingStoryMatches = (matchSuggestions?.storyMatches ?? []).filter(
     (m) => m.matchedExistingKey && !resolvedMatches.has(`story:${m.generatedStoryName}`),
   );
-  const detailEpic = detailTarget ? backlog?.epics[detailTarget.epicIndex] : undefined;
-  const detailStory = detailTarget && detailEpic ? detailEpic.userStories[detailTarget.storyIndex] : undefined;
+  const detailEpic = detailTarget ? backlog?.epics.find((e) => e._id === detailTarget.epicId) : undefined;
+  const detailStory = detailTarget && detailEpic ? detailEpic.userStories.find((s) => s._id === detailTarget.storyId) : undefined;
 
   return (
     <>
       <Typography.Paragraph type="secondary">
-        Upload a .docx requirements document that already describes Epics and User Stories. Gemini extracts them and
-        creates exactly <strong>one Task per User Story</strong> — its single concrete deliverable, not a further
-        breakdown. Nothing is saved in this system — review the generated tasks below, then submit to push them
-        straight into a Jira project.
+        1) Pick the target Jira project. 2) Review what's already there. 3) Upload a .docx requirements document —
+        Gemini extracts its Epics/User Stories, creating exactly <strong>one Task per User Story</strong>. 4) Check
+        for existing Epics/Stories that mean the same thing and map onto them instead of duplicating. 5) Review, edit
+        or remove any row. 6) Submit. Nothing is saved in this system at any point — only step 6 writes to Jira.
       </Typography.Paragraph>
 
-      <Space wrap align="start">
-        <Upload
-          accept=".docx"
-          maxCount={1}
-          fileList={file ? [{ uid: '1', name: file.name }] : []}
-          beforeUpload={(f) => {
-            setFile(f);
-            return false;
-          }}
-          onRemove={() => setFile(null)}
-        >
-          <Button icon={<UploadOutlined />}>Choose .docx file</Button>
-        </Upload>
-        <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} disabled={!file} onClick={handleGenerate}>
-          Generate Tasks
-        </Button>
-      </Space>
-      {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} />}
+      <Typography.Title level={5}>1. Target Jira project</Typography.Title>
+      <Select
+        showSearch
+        placeholder="Target Jira project"
+        style={{ width: 260 }}
+        value={targetJiraKey}
+        onChange={handleSelectProject}
+        options={jiraProjects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+        optionFilterProp="label"
+      />
+
+      {targetJiraKey && (
+        <>
+          <Typography.Title level={5} style={{ marginTop: 24 }}>
+            2. Existing Epics &amp; User Stories in {targetJiraKey}
+          </Typography.Title>
+          {existingError && <Alert type="error" showIcon message={existingError} />}
+          <Table
+            size="small"
+            loading={loadingExisting}
+            pagination={{ pageSize: 5 }}
+            dataSource={existingItems}
+            rowKey="key"
+            locale={{ emptyText: 'No Epics or User Stories found in this project yet.' }}
+            columns={[
+              { title: 'Key', dataIndex: 'key', width: 100 },
+              { title: 'Type', dataIndex: 'issueType', width: 100 },
+              { title: 'Name', dataIndex: 'name' },
+            ]}
+          />
+
+          <Typography.Title level={5} style={{ marginTop: 24 }}>
+            3. Import Word document
+          </Typography.Title>
+          <Space wrap align="start">
+            <Upload
+              accept=".docx"
+              maxCount={1}
+              fileList={file ? [{ uid: '1', name: file.name }] : []}
+              beforeUpload={(f) => {
+                setFile(f);
+                return false;
+              }}
+              onRemove={() => setFile(null)}
+            >
+              <Button icon={<UploadOutlined />}>Choose .docx file</Button>
+            </Upload>
+            <Button type="primary" icon={<ThunderboltOutlined />} loading={generating} disabled={!file} onClick={handleGenerate}>
+              Generate Tasks
+            </Button>
+          </Space>
+          {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} />}
+        </>
+      )}
 
       {backlog && (
         <>
           <Typography.Title level={5} style={{ marginTop: 24 }}>
-            Target Jira project
+            4. Check for existing matches
           </Typography.Title>
           <Typography.Paragraph type="secondary">
-            Pick the Jira project this backlog is headed for — used both to check for existing Epics/User Stories to
-            reuse below, and, once you're ready, to submit.
+            Compares the Epics/User Stories above against the list from step 2 by meaning, not just exact text.
           </Typography.Paragraph>
-          <Space wrap>
-            <Select
-              showSearch
-              placeholder="Target Jira project"
-              style={{ width: 260 }}
-              value={targetJiraKey}
-              onChange={(value) => {
-                setTargetJiraKey(value);
-                setMatchSuggestions(null);
-                setResolvedMatches(new Set());
-              }}
-              options={jiraProjects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
-              optionFilterProp="label"
-            />
-            <Button icon={<SearchOutlined />} loading={checkingMatches} disabled={!targetJiraKey} onClick={handleCheckMatches}>
-              Check for Existing Matches in Jira
-            </Button>
-          </Space>
+          <Button icon={<SearchOutlined />} loading={checkingMatches} onClick={handleCheckMatches}>
+            Check for Existing Matches in Jira
+          </Button>
           {matchError && <Alert style={{ marginTop: 12 }} type="error" showIcon message={matchError} />}
 
           {(pendingEpicMatches.length > 0 || pendingStoryMatches.length > 0) && (
@@ -629,8 +765,13 @@ function FromDocumentForm() {
           )}
 
           <Typography.Title level={5} style={{ marginTop: 24 }}>
-            Review ({flatRows.length} task{flatRows.length === 1 ? '' : 's'})
+            5. Review, edit or remove ({flatRows.length} task{flatRows.length === 1 ? '' : 's'})
           </Typography.Title>
+          <Typography.Paragraph type="secondary">
+            A Task's Summary gets a matching <code>[Task-x.x.x]</code> prefix automatically once its User Story is
+            mapped onto an existing <code>[US-x.x]</code>-style Jira Story — visible below and editable like anything
+            else.
+          </Typography.Paragraph>
           <Table
             size="small"
             pagination={{ pageSize: 10 }}
@@ -641,7 +782,7 @@ function FromDocumentForm() {
                 render: (_, r: FlatDocRow) => (
                   <Space>
                     {r.epicName}
-                    {mappedEpicKeys[r.epicIndex] && <Tag color="blue">Mapped: {mappedEpicKeys[r.epicIndex]}</Tag>}
+                    {mappedEpicKeys[r.epicId] && <Tag color="blue">Mapped: {mappedEpicKeys[r.epicId]}</Tag>}
                   </Space>
                 ),
               },
@@ -650,9 +791,7 @@ function FromDocumentForm() {
                 render: (_, r: FlatDocRow) => (
                   <Space>
                     {r.storyName}
-                    {mappedStoryKeys[`${r.epicIndex}-${r.storyIndex}`] && (
-                      <Tag color="blue">Mapped: {mappedStoryKeys[`${r.epicIndex}-${r.storyIndex}`]}</Tag>
-                    )}
+                    {mappedStoryKeys[r.storyId] && <Tag color="blue">Mapped: {mappedStoryKeys[r.storyId]}</Tag>}
                   </Space>
                 ),
               },
@@ -663,13 +802,14 @@ function FromDocumentForm() {
               {
                 title: 'Actions',
                 render: (_, r: FlatDocRow) => (
-                  <Button
-                    size="small"
-                    icon={<EditOutlined />}
-                    onClick={() => setDetailTarget({ epicIndex: r.epicIndex, storyIndex: r.storyIndex })}
-                  >
-                    View / Edit
-                  </Button>
+                  <Space>
+                    <Button size="small" icon={<EditOutlined />} onClick={() => setDetailTarget({ epicId: r.epicId, storyId: r.storyId })}>
+                      View / Edit
+                    </Button>
+                    <Button size="small" danger icon={<DeleteOutlined />} onClick={() => removeRow(r.epicId, r.storyId)}>
+                      Remove
+                    </Button>
+                  </Space>
                 ),
               },
             ]}
@@ -678,13 +818,13 @@ function FromDocumentForm() {
           {isAdmin ? (
             <>
               <Typography.Title level={5} style={{ marginTop: 16 }}>
-                Submit
+                6. Submit
               </Typography.Title>
               <Typography.Paragraph type="secondary">
-                Pushes every Epic/User Story/Task above directly into the selected Jira project (picked above),
-                preserving the hierarchy. This is a live, visible write to your team's Jira.
+                Pushes every Epic/User Story/Task above directly into {targetJiraKey}, preserving the hierarchy. This
+                is a live, visible write to your team's Jira.
               </Typography.Paragraph>
-              <Button type="primary" icon={<CloudSyncOutlined />} loading={pushing} disabled={!targetJiraKey} onClick={handleSubmit}>
+              <Button type="primary" icon={<CloudSyncOutlined />} loading={pushing} disabled={flatRows.length === 0} onClick={handleSubmit}>
                 Submit to Jira
               </Button>
               {pushError && <Alert style={{ marginTop: 12 }} type="error" showIcon message={pushError} />}
@@ -730,11 +870,11 @@ function FromDocumentForm() {
 
       {detailTarget && detailEpic && detailStory && (
         <GeneratedItemDetailModal
-          key={`${detailTarget.epicIndex}-${detailTarget.storyIndex}`}
+          key={`${detailTarget.epicId}-${detailTarget.storyId}`}
           epic={detailEpic}
           story={detailStory}
           onClose={() => setDetailTarget(null)}
-          onSave={(values) => handleSaveDetail(detailTarget.epicIndex, detailTarget.storyIndex, values)}
+          onSave={(values) => handleSaveDetail(detailTarget.epicId, detailTarget.storyId, values)}
         />
       )}
     </>
