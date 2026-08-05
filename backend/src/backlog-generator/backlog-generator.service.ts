@@ -11,10 +11,40 @@ import { EmployeesService } from '../employees/employees.service';
 import { ProjectsService } from '../projects/projects.service';
 import { JiraService } from '../jira/jira.service';
 import { GenerateBacklogDto } from './dto/generate-backlog.dto';
+import { CreateBackupEpicTaskDto } from './dto/create-backup-epic-task.dto';
 
 /** Parallels JiraService's "Unassigned (Jira)" placeholder — kept as a separate account so generated tasks stay distinguishable from Jira-synced ones when reassigning real owners later. */
 const UNASSIGNED_GENERATED_EMAIL = 'unassigned-generated@devperf.internal';
 const UNASSIGNED_GENERATED_NAME = 'Unassigned (Generated)';
+
+/**
+ * The "backup epic" convention: every project may have one Epic-0 holding
+ * three fixed stories — Enhance (US-0.1), Change Request (US-0.2), and
+ * Back-up (US-0.3). Initializing it reserves 30% of the project's current
+ * total points (from every other Epic) as a single Back-up task
+ * (Task-0.3.1). Every Enhance/Change Request task created under Epic-0
+ * afterwards draws its points down from that same Back-up task, instead of
+ * adding new scope to the project — see initializeBackupEpic/createBackupEpicTask.
+ */
+const BACKUP_EPIC_RATIO = 0.3;
+const BACKUP_EPIC_CODE = 'Epic-0';
+const ENHANCE_STORY_CODE = 'US-0.1';
+const CHANGE_REQUEST_STORY_CODE = 'US-0.2';
+const BACKUP_STORY_CODE = 'US-0.3';
+const BACKUP_TASK_CODE = 'Task-0.3.1';
+
+export interface BackupEpicInitResult {
+  projectName: string;
+  /** Sum of `points` across every Task/Bug/Sub-task in the project at the time of initialization (i.e. every Epic other than Epic-0). */
+  totalOtherPoints: number;
+  /** Math.round(totalOtherPoints * 0.3) — the Back-up task's starting points. */
+  backupPoints: number;
+  epic: TaskRecord;
+  enhanceStory: TaskRecord;
+  changeRequestStory: TaskRecord;
+  backupStory: TaskRecord;
+  backupTask: TaskRecord;
+}
 
 export interface GeneratedTask {
   name: string;
@@ -605,6 +635,157 @@ export class BacklogGeneratorService {
       totalEstimateHours,
       document: docLines.join('\n'),
     };
+  }
+
+  /**
+   * One-time setup for a project's Epic-0 (Enhance / Change Request /
+   * Back-up). Creates the Epic, its three fixed stories, and a single
+   * Back-up task (Task-0.3.1) holding 30% of the project's current total
+   * points (summed across every other Epic's Tasks/Bugs/Sub-tasks). Throws
+   * if Epic-0 already exists for this project — it's meant to run once, at
+   * the point every other Epic has been created and estimated.
+   */
+  async initializeBackupEpic(projectName: string): Promise<BackupEpicInitResult> {
+    const existingEpic = await this.taskRepository.findOne({ where: { projectName, taskCode: BACKUP_EPIC_CODE } });
+    if (existingEpic) {
+      throw new BadRequestException(`Epic-0 already exists for project "${projectName}" — it can only be initialized once.`);
+    }
+
+    const projectTasks = await this.taskRepository.find({ where: { projectName } });
+    const leafTasks = projectTasks.filter((t) => t.issueType !== 'Epic' && t.issueType !== 'Story');
+    const totalOtherPoints = leafTasks.reduce((sum, t) => sum + t.points, 0);
+    const backupPoints = Math.round(totalOtherPoints * BACKUP_EPIC_RATIO);
+
+    const existingProject = await this.projectsService.findByName(projectName);
+    const project = existingProject ?? (await this.projectsService.upsertProject(projectName, {}));
+    const employeeId = await this.resolveUnassignedGeneratedPlaceholderEmployeeId();
+    const runToken = randomBytes(4).toString('hex');
+    const epicJiraKey = `GEN-${runToken}-EPIC-0`;
+
+    const epic = await this.saveGeneratedRow({
+      employeeId,
+      projectName: project.name,
+      taskName: 'Enhance / Change Request / Back-up',
+      taskCode: BACKUP_EPIC_CODE,
+      jiraIssueKey: epicJiraKey,
+      issueType: 'Epic',
+      epicKey: null,
+      storyKey: null,
+    });
+
+    const enhanceStoryKey = `GEN-${runToken}-US-0-1`;
+    const enhanceStory = await this.saveGeneratedRow({
+      employeeId,
+      projectName: project.name,
+      taskName: 'Enhance',
+      taskCode: ENHANCE_STORY_CODE,
+      jiraIssueKey: enhanceStoryKey,
+      issueType: 'Story',
+      epicKey: epicJiraKey,
+      storyKey: null,
+    });
+
+    const changeRequestStoryKey = `GEN-${runToken}-US-0-2`;
+    const changeRequestStory = await this.saveGeneratedRow({
+      employeeId,
+      projectName: project.name,
+      taskName: 'Change Request',
+      taskCode: CHANGE_REQUEST_STORY_CODE,
+      jiraIssueKey: changeRequestStoryKey,
+      issueType: 'Story',
+      epicKey: epicJiraKey,
+      storyKey: null,
+    });
+
+    const backupStoryKey = `GEN-${runToken}-US-0-3`;
+    const backupStory = await this.saveGeneratedRow({
+      employeeId,
+      projectName: project.name,
+      taskName: 'Back-up',
+      taskCode: BACKUP_STORY_CODE,
+      jiraIssueKey: backupStoryKey,
+      issueType: 'Story',
+      epicKey: epicJiraKey,
+      storyKey: null,
+    });
+
+    const backupTask = await this.saveGeneratedRow({
+      employeeId,
+      projectName: project.name,
+      taskName: 'Back-up point pool',
+      taskCode: BACKUP_TASK_CODE,
+      jiraIssueKey: null,
+      issueType: 'Task',
+      epicKey: epicJiraKey,
+      storyKey: backupStoryKey,
+      points: backupPoints,
+      estimateHours: backupPoints,
+    });
+
+    this.logger.log(
+      `Initialized Epic-0 (backup epic) for "${project.name}": ${totalOtherPoints} other points -> ${backupPoints} backup points`,
+    );
+
+    return { projectName: project.name, totalOtherPoints, backupPoints, epic, enhanceStory, changeRequestStory, backupStory, backupTask };
+  }
+
+  /**
+   * Adds one Enhance (US-0.1) or Change Request (US-0.2) task under an
+   * already-initialized Epic-0, drawing its points down from the Back-up
+   * task (Task-0.3.1) instead of adding new scope to the project — e.g. the
+   * Back-up task at 300 points loses 3 when a 3-point Enhance task is added,
+   * landing at 297.
+   */
+  async createBackupEpicTask(projectName: string, dto: CreateBackupEpicTaskDto): Promise<{ task: TaskRecord; backupTask: TaskRecord }> {
+    const epic = await this.taskRepository.findOne({ where: { projectName, taskCode: BACKUP_EPIC_CODE } });
+    if (!epic) {
+      throw new BadRequestException(`Epic-0 has not been initialized for project "${projectName}" yet.`);
+    }
+
+    const storyCode = dto.category === 'ENHANCE' ? ENHANCE_STORY_CODE : CHANGE_REQUEST_STORY_CODE;
+    const storyNumber = dto.category === 'ENHANCE' ? 1 : 2;
+    const story = await this.taskRepository.findOne({ where: { projectName, taskCode: storyCode } });
+    if (!story) {
+      throw new BadRequestException(`${storyCode} not found for project "${projectName}" — was Epic-0 initialized correctly?`);
+    }
+
+    const backupTask = await this.taskRepository.findOne({ where: { projectName, taskCode: BACKUP_TASK_CODE } });
+    if (!backupTask) {
+      throw new BadRequestException(`The Back-up task (${BACKUP_TASK_CODE}) was not found for project "${projectName}".`);
+    }
+
+    const epicKey = epic.jiraIssueKey;
+    const storyKey = story.jiraIssueKey;
+    if (!epicKey || !storyKey) {
+      throw new BadRequestException('Epic-0 structure is corrupted — missing a jiraIssueKey.');
+    }
+
+    const siblingCount = await this.taskRepository.count({ where: { projectName, epicKey, storyKey } });
+    const taskCode = `Task-0.${storyNumber}.${siblingCount + 1}`;
+
+    const employeeId = dto.employeeId ?? (await this.resolveUnassignedGeneratedPlaceholderEmployeeId());
+    const task = await this.saveGeneratedRow({
+      employeeId,
+      projectName,
+      taskName: this.truncateName(dto.taskName),
+      taskCode,
+      jiraIssueKey: null,
+      issueType: 'Task',
+      epicKey,
+      storyKey,
+      points: dto.points,
+      estimateHours: dto.estimateHours,
+      complexity: dto.complexity,
+    });
+
+    backupTask.points -= dto.points;
+    const updatedBackupTask = await this.taskRepository.save(backupTask);
+
+    this.logger.log(
+      `Created ${taskCode} (${dto.points} pts) under Epic-0 for "${projectName}"; ${BACKUP_TASK_CODE} drawn down to ${updatedBackupTask.points}`,
+    );
+
+    return { task, backupTask: updatedBackupTask };
   }
 
   private truncateName(name: string): string {

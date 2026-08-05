@@ -37,6 +37,10 @@ export class TaskRecord {
   @Column({ length: 200 })
   taskName: string;
 
+  /** Free-text detail entered manually today; also where a synced Jira issue's own description will land once Jira sync is extended to write it. */
+  @Column({ type: 'text', nullable: true })
+  description: string | null;
+
   /**
    * Human-friendly hierarchy code shown in Task Management instead of the
    * title — e.g. `Epic-1`, `US-1.1` (Story 1 of Epic 1), `Task-1.1.1` (Task 1

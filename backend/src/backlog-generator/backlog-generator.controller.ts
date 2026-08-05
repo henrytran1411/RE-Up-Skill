@@ -1,9 +1,10 @@
-import { BadRequestException, Body, Controller, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Param, Post, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { BacklogGeneratorService } from './backlog-generator.service';
 import { GenerateBacklogDto } from './dto/generate-backlog.dto';
 import { PreviewFromJiraLinkDto } from './dto/preview-from-jira-link.dto';
 import { PushGeneratedBacklogDto } from './dto/push-generated-backlog.dto';
+import { CreateBackupEpicTaskDto } from './dto/create-backup-epic-task.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
 
@@ -109,5 +110,26 @@ export class BacklogGeneratorController {
   @Roles(Role.ADMIN)
   pushGeneratedToJira(@Body() dto: PushGeneratedBacklogDto) {
     return this.backlogGeneratorService.pushGeneratedBacklogToJira(dto.jiraProjectKey, { epics: dto.epics });
+  }
+
+  /**
+   * One-time setup: creates Epic-0 (Enhance / Change Request / Back-up) with
+   * US-0.1/US-0.2/US-0.3 and a single Back-up task (Task-0.3.1) holding 30%
+   * of the project's current total points. Throws if Epic-0 already exists
+   * for this project.
+   */
+  @Post('projects/:projectName/backup-epic/initialize')
+  initializeBackupEpic(@Param('projectName') projectName: string) {
+    return this.backlogGeneratorService.initializeBackupEpic(projectName);
+  }
+
+  /**
+   * Adds one Enhance/Change Request task under an already-initialized
+   * Epic-0, drawing its points down from the Back-up task (Task-0.3.1)
+   * instead of adding new scope to the project.
+   */
+  @Post('projects/:projectName/backup-epic/tasks')
+  createBackupEpicTask(@Param('projectName') projectName: string, @Body() dto: CreateBackupEpicTaskDto) {
+    return this.backlogGeneratorService.createBackupEpicTask(projectName, dto);
   }
 }

@@ -358,6 +358,7 @@ export function ProjectsPage() {
     taskForm.setFieldsValue({
       employeeId: task.employeeId,
       taskName: task.taskName,
+      description: task.description ?? undefined,
       taskCode: task.taskCode ?? undefined,
       estimateHours: task.estimateHours,
       complexity: task.complexity,
@@ -1407,6 +1408,13 @@ export function ProjectsPage() {
           </Form.Item>
           <Form.Item name="taskName" label="Task name" rules={[{ required: true }]}>
             <Input />
+          </Form.Item>
+          <Form.Item
+            name="description"
+            label="Description"
+            extra="Also where a synced Jira issue's own description will land, once Jira sync is extended to write it."
+          >
+            <Input.TextArea rows={3} />
           </Form.Item>
           <Form.Item
             name="taskCode"

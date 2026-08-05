@@ -15,6 +15,11 @@ export class UpdateTaskRecordDto {
   @IsOptional()
   taskName?: string;
 
+  /** Free-text detail — also where a synced Jira issue's own description will land once Jira sync is extended to write it. */
+  @IsString()
+  @IsOptional()
+  description?: string;
+
   /** Hierarchy code shown in Task Management instead of the title — e.g. "Epic-1", "US-1.1", "Task-1.1.1", "SubTask-1.1.1.1". */
   @IsString()
   @IsOptional()
