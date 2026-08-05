@@ -2,7 +2,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, Cart
 import { Modal, Table, Tag, Row, Col, Statistic, Typography } from 'antd';
 import { useState } from 'react';
 import { ContributionSource } from '../types/common';
-import { ContributionYearSummary } from '../types/contribution';
+import { ContributionHalfYearSummary } from '../types/contribution';
 
 const SOURCE_LABELS: Record<ContributionSource, string> = {
   [ContributionSource.PM_EVALUATION]: 'PM Evaluation',
@@ -22,10 +22,18 @@ const SOURCE_COLORS: Record<ContributionSource, string> = {
 
 const SOURCES = Object.values(ContributionSource);
 
+interface ChartRow extends ContributionHalfYearSummary {
+  label: string;
+}
+
+function toChartRow(summary: ContributionHalfYearSummary): ChartRow {
+  return { ...summary, label: `${summary.year} ${summary.half}` };
+}
+
 interface TooltipPayloadItem {
   dataKey: string;
   value: number;
-  payload: ContributionYearSummary;
+  payload: ChartRow;
 }
 
 function ChartTooltip({ active, payload }: { active?: boolean; payload?: TooltipPayloadItem[] }) {
@@ -35,7 +43,7 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: Tooltip
   const entry = payload[0].payload;
   return (
     <div style={{ background: '#fff', border: '1px solid #eee', padding: 8, borderRadius: 4 }}>
-      <strong>{entry.year}</strong> — total {entry.totalPoints} points
+      <strong>{entry.label}</strong> — total {entry.totalPoints} points
       {SOURCES.map((source) => (
         <div key={source} style={{ color: SOURCE_COLORS[source], fontSize: 12 }}>
           {SOURCE_LABELS[source]}: {entry.bySource[source]}
@@ -46,11 +54,12 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: Tooltip
   );
 }
 
-/** Year-by-year contribution/performance points, stacked by source. Click a bar for the full detail. */
-export function ContributionHistoryChart({ summaries }: { summaries: ContributionYearSummary[] }) {
-  const [selected, setSelected] = useState<ContributionYearSummary | null>(null);
+/** Contribution/performance points by half-year period, stacked by source. Click a bar for the full detail. */
+export function ContributionHistoryChart({ summaries }: { readonly summaries: ContributionHalfYearSummary[] }) {
+  const [selected, setSelected] = useState<ChartRow | null>(null);
+  const rows = summaries.map(toChartRow);
 
-  if (summaries.length === 0) {
+  if (rows.length === 0) {
     return <div style={{ color: '#999' }}>No contribution records yet.</div>;
   }
 
@@ -58,17 +67,17 @@ export function ContributionHistoryChart({ summaries }: { summaries: Contributio
     <>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart
-          data={summaries}
+          data={rows}
           margin={{ top: 8, left: 8, right: 8, bottom: 8 }}
           onClick={(e) => {
-            const point = e?.activePayload?.[0]?.payload as ContributionYearSummary | undefined;
+            const point = e?.activePayload?.[0]?.payload as ChartRow | undefined;
             if (point) {
               setSelected(point);
             }
           }}
         >
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="year" />
+          <XAxis dataKey="label" />
           <YAxis />
           <Tooltip content={<ChartTooltip />} />
           <Legend formatter={(value) => SOURCE_LABELS[value as ContributionSource] ?? value} />
@@ -86,7 +95,7 @@ export function ContributionHistoryChart({ summaries }: { summaries: Contributio
       </ResponsiveContainer>
 
       <Modal
-        title={`${selected?.year ?? ''} contribution detail`}
+        title={`${selected?.label ?? ''} contribution detail`}
         open={selected !== null}
         onCancel={() => setSelected(null)}
         footer={null}

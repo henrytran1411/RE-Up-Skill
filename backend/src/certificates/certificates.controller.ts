@@ -50,6 +50,12 @@ export class CertificatesController {
     return this.certificatesService.findYearlySummaryForEmployee(user.employeeId);
   }
 
+  /** The four most recent calendar years, always present even with zero certificates — feeds the employee dashboard's chart. */
+  @Get('me/recent-yearly')
+  findMyRecentYearlySummary(@CurrentUser() user: AuthenticatedUser) {
+    return this.certificatesService.findRecentYearlySummaryForEmployee(user.employeeId, 4);
+  }
+
   /** Awaiting verification, across every employee — Admin's review queue. */
   @Get('pending')
   @Roles(Role.ADMIN)

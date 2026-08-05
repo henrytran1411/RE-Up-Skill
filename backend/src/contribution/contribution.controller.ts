@@ -35,6 +35,12 @@ export class ContributionController {
     return this.contributionService.findYearlySummaryForEmployee(user.employeeId);
   }
 
+  /** The four most recent half-year periods, with a per-source breakdown — feeds the employee dashboard's chart. */
+  @Get('me/half-yearly')
+  findMyHalfYearlySummary(@CurrentUser() user: AuthenticatedUser) {
+    return this.contributionService.findRecentHalfYearlySummaryForEmployee(user.employeeId, 4);
+  }
+
   @Get('employee/:employeeId')
   @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {

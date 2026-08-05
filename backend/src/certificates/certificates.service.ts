@@ -137,4 +137,30 @@ export class CertificatesService {
         certificates: yearCertificates,
       }));
   }
+
+  /**
+   * The `count` most recent calendar years up to and including this one,
+   * always present even with zero certificates — so the employee's own
+   * dashboard always shows exactly `count` years instead of however many
+   * happen to have a verified certificate.
+   */
+  async findRecentYearlySummaryForEmployee(employeeId: string, count = 4): Promise<CertificateYearSummary[]> {
+    const certificates = await this.certificateRepository.find({
+      where: { employeeId, isVerified: true },
+      order: { verifiedAt: 'DESC' },
+    });
+
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: count }, (_, i) => currentYear - (count - 1 - i));
+
+    return years.map((year) => {
+      const yearCertificates = certificates.filter((c) => c.verifiedAt!.getFullYear() === year);
+      return {
+        employeeId,
+        year,
+        totalPoints: round2(yearCertificates.reduce((sum, c) => sum + Number(c.points ?? 0), 0)),
+        certificates: yearCertificates,
+      };
+    });
+  }
 }

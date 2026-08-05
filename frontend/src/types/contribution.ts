@@ -20,3 +20,14 @@ export interface ContributionYearSummary {
   bySource: Record<ContributionSource, number>;
   records: ContributionRecord[];
 }
+
+export interface ContributionHalfYearSummary {
+  employeeId: string;
+  year: number;
+  half: 'H1' | 'H2';
+  periodStart: string;
+  periodEnd: string;
+  totalPoints: number;
+  bySource: Record<ContributionSource, number>;
+  records: ContributionRecord[];
+}

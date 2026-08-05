@@ -10,8 +10,8 @@ import { LevelHistoryTimeline } from '../../components/LevelHistoryTimeline';
 import { PerformanceScoreChart } from '../../components/PerformanceScoreChart';
 import { SkillSuggestionsPanel } from '../../components/SkillSuggestionsPanel';
 import { createBenchLog, fetchMyBenchLogs, fetchMyIdleLearningAlert } from '../../services/benchService';
-import { fetchMyCertificateYearlySummary } from '../../services/certificateService';
-import { fetchMyContributionYearlySummary } from '../../services/contributionService';
+import { fetchMyCertificateRecentYearlySummary } from '../../services/certificateService';
+import { fetchMyContributionHalfYearlySummary } from '../../services/contributionService';
 import { fetchMyLevelHistory, fetchMyProfile } from '../../services/employeeService';
 import { fetchMyPerformanceScoreHistory } from '../../services/performanceService';
 import { fetchMySkillSuggestions } from '../../services/skillSuggestionService';
@@ -19,7 +19,7 @@ import { fetchMyTechnicalPoint } from '../../services/technicalPointService';
 import { BenchLog, IdleLearningAlert } from '../../types/bench';
 import { CertificateYearSummary } from '../../types/certificate';
 import { BenchActivityType } from '../../types/common';
-import { ContributionYearSummary } from '../../types/contribution';
+import { ContributionHalfYearSummary } from '../../types/contribution';
 import { Employee, LevelHistoryEntry } from '../../types/employee';
 import { PerformanceScorePeriod } from '../../types/performance';
 import { SkillGapSuggestion } from '../../types/skillSuggestion';
@@ -32,7 +32,7 @@ export function DevDashboardPage() {
   const [benchLogs, setBenchLogs] = useState<BenchLog[]>([]);
   const [technicalPoint, setTechnicalPoint] = useState<TechnicalPointBreakdown | null>(null);
   const [skillSuggestions, setSkillSuggestions] = useState<SkillGapSuggestion[]>([]);
-  const [contributionSummary, setContributionSummary] = useState<ContributionYearSummary[]>([]);
+  const [contributionSummary, setContributionSummary] = useState<ContributionHalfYearSummary[]>([]);
   const [certificateSummary, setCertificateSummary] = useState<CertificateYearSummary[]>([]);
   const [performanceHistory, setPerformanceHistory] = useState<PerformanceScorePeriod[]>([]);
   const [benchModalOpen, setBenchModalOpen] = useState(false);
@@ -47,8 +47,8 @@ export function DevDashboardPage() {
         fetchMyBenchLogs(),
         fetchMyTechnicalPoint(),
         fetchMySkillSuggestions(),
-        fetchMyContributionYearlySummary(),
-        fetchMyCertificateYearlySummary(),
+        fetchMyContributionHalfYearlySummary(),
+        fetchMyCertificateRecentYearlySummary(),
         fetchMyIdleLearningAlert(),
         fetchMyPerformanceScoreHistory(),
       ]);
@@ -131,7 +131,7 @@ export function DevDashboardPage() {
         </Col>
 
         <Col span={24}>
-          <Card title="Contribution, Performance & Task Completion by Year">
+          <Card title="Contribution, Performance & Task Completion by Half-Year">
             <ContributionHistoryChart summaries={contributionSummary} />
           </Card>
         </Col>

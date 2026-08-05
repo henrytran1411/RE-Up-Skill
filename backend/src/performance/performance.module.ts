@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { PerformanceScoreRecord } from './entities/performance-score-record.entity';
 import { PerformanceService } from './performance.service';
@@ -12,11 +12,12 @@ import { EmployeesModule } from '../employees/employees.module';
   imports: [
     TypeOrmModule.forFeature([PerformanceScoreRecord]),
     SkillsModule,
-    ContributionModule,
+    forwardRef(() => ContributionModule),
     CertificatesModule,
     EmployeesModule,
   ],
   controllers: [PerformanceController],
   providers: [PerformanceService],
+  exports: [PerformanceService],
 })
 export class PerformanceModule {}

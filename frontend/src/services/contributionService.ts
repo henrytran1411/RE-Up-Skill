@@ -1,6 +1,6 @@
 import { apiClient } from './apiClient';
 import { ContributionSource } from '../types/common';
-import { ContributionRecord, ContributionYearSummary } from '../types/contribution';
+import { ContributionHalfYearSummary, ContributionRecord, ContributionYearSummary } from '../types/contribution';
 
 export interface ContributionRecordPayload {
   employeeId: string;
@@ -40,6 +40,12 @@ export async function fetchMyContributionRecords(): Promise<ContributionRecord[]
 
 export async function fetchMyContributionYearlySummary(): Promise<ContributionYearSummary[]> {
   const { data } = await apiClient.get<ContributionYearSummary[]>('/contribution-records/me/yearly');
+  return data;
+}
+
+/** The two most recent half-year periods, with a per-source breakdown. */
+export async function fetchMyContributionHalfYearlySummary(): Promise<ContributionHalfYearSummary[]> {
+  const { data } = await apiClient.get<ContributionHalfYearSummary[]>('/contribution-records/me/half-yearly');
   return data;
 }
 

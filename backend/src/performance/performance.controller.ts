@@ -10,10 +10,10 @@ import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-use
 export class PerformanceController {
   constructor(private readonly performanceService: PerformanceService) {}
 
-  /** Performance Score (Technical Point + Contribution + Certificate points) per half-year period. */
+  /** Performance Score (Technical Point + Contribution + Certificate points) — the four most recent half-year periods. */
   @Get('me')
   findMine(@CurrentUser() user: AuthenticatedUser) {
-    return this.performanceService.findPerformanceScoreHistoryForEmployee(user.employeeId);
+    return this.performanceService.findRecentPerformanceScoreHistoryForEmployee(user.employeeId, 4);
   }
 
   @Get('employee/:employeeId')

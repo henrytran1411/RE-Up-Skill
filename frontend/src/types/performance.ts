@@ -6,7 +6,7 @@ export interface PerformanceScorePeriod {
   periodEnd: string;
   /** Technical Point as of when this period was snapshotted (or right now, for the live current period). */
   technicalPoint: number;
-  /** Sum of contribution points recorded in this half. */
+  /** 20% of the sum of contribution points recorded in this half. */
   contributionPoints: number;
   /** Sum of verified certificate points from this half. */
   certificatePoints: number;

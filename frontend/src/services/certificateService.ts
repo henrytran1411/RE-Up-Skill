@@ -49,6 +49,12 @@ export async function fetchMyCertificateYearlySummary(): Promise<CertificateYear
   return data;
 }
 
+/** The four most recent calendar years, always present even with zero certificates. */
+export async function fetchMyCertificateRecentYearlySummary(): Promise<CertificateYearSummary[]> {
+  const { data } = await apiClient.get<CertificateYearSummary[]>('/certificates/me/recent-yearly');
+  return data;
+}
+
 /** Admin-only: every certificate across every employee. */
 export async function fetchAllCertificates(): Promise<EmployeeCertificate[]> {
   const { data } = await apiClient.get<EmployeeCertificate[]>('/certificates');

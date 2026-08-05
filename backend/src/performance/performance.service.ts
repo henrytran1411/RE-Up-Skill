@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PerformanceScoreRecord, PerformancePeriodHalf } from './entities/performance-score-record.entity';
@@ -8,21 +8,7 @@ import { SkillsService } from '../skills/skills.service';
 import { ContributionService } from '../contribution/contribution.service';
 import { CertificatesService } from '../certificates/certificates.service';
 import { EmployeesService } from '../employees/employees.service';
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-function currentPeriod(): { year: number; half: PerformancePeriodHalf } {
-  const now = new Date();
-  return { year: now.getFullYear(), half: now.getMonth() < 6 ? PerformancePeriodHalf.H1 : PerformancePeriodHalf.H2 };
-}
-
-function periodBounds(year: number, half: PerformancePeriodHalf): { periodStart: string; periodEnd: string } {
-  return half === PerformancePeriodHalf.H1
-    ? { periodStart: `${year}-01-01`, periodEnd: `${year}-06-30` }
-    : { periodStart: `${year}-07-01`, periodEnd: `${year}-12-31` };
-}
+import { currentPeriod, lastNHalfYearPeriods, periodBounds, round2 } from '../common/utils/period.util';
 
 export interface PerformanceScorePeriod {
   employeeId: string;
@@ -45,12 +31,16 @@ interface LiveComputedScore {
   certificatePoints: number;
 }
 
+/** Contribution points on the Performance Score panel are 20% of the raw total shown on the Contribution panel. */
+const CONTRIBUTION_WEIGHT = 0.2;
+
 @Injectable()
 export class PerformanceService {
   constructor(
     @InjectRepository(PerformanceScoreRecord)
     private readonly recordRepository: Repository<PerformanceScoreRecord>,
     private readonly skillsService: SkillsService,
+    @Inject(forwardRef(() => ContributionService))
     private readonly contributionService: ContributionService,
     private readonly certificatesService: CertificatesService,
     private readonly employeesService: EmployeesService,
@@ -79,7 +69,7 @@ export class PerformanceService {
     const contributionPoints = round2(
       contributionRecords
         .filter((r) => r.recordDate >= periodStart && r.recordDate <= periodEnd)
-        .reduce((sum, r) => sum + Number(r.points), 0),
+        .reduce((sum, r) => sum + Number(r.points), 0) * CONTRIBUTION_WEIGHT,
     );
     const certificatePoints = round2(
       certificates
@@ -111,6 +101,25 @@ export class PerformanceService {
     };
   }
 
+  private async buildLiveDto(
+    employeeId: string,
+    year: number,
+    half: PerformancePeriodHalf,
+  ): Promise<PerformanceScorePeriod> {
+    const live = await this.computeLiveScoreForPeriod(employeeId, year, half);
+    const { periodStart, periodEnd } = periodBounds(year, half);
+    return {
+      employeeId,
+      year,
+      half,
+      periodStart,
+      periodEnd,
+      ...live,
+      totalScore: round2(live.technicalPoint + live.contributionPoints + live.certificatePoints),
+      isFinal: false,
+    };
+  }
+
   /**
    * Snapshotted (frozen) periods, oldest first, plus a live-computed preview
    * for the current period if it hasn't been snapshotted yet — so the chart
@@ -128,21 +137,59 @@ export class PerformanceService {
     const { year: currentYear, half: currentHalf } = currentPeriod();
     const hasCurrentSnapshot = stored.some((r) => r.year === currentYear && r.half === currentHalf);
     if (!hasCurrentSnapshot) {
-      const live = await this.computeLiveScoreForPeriod(employeeId, currentYear, currentHalf);
-      const { periodStart, periodEnd } = periodBounds(currentYear, currentHalf);
-      results.push({
-        employeeId,
-        year: currentYear,
-        half: currentHalf,
-        periodStart,
-        periodEnd,
-        ...live,
-        totalScore: round2(live.technicalPoint + live.contributionPoints + live.certificatePoints),
-        isFinal: false,
-      });
+      results.push(await this.buildLiveDto(employeeId, currentYear, currentHalf));
     }
 
     return results.sort((a, b) => a.year - b.year || a.half.localeCompare(b.half));
+  }
+
+  /**
+   * The `count` most recent half-year periods, each backed by its frozen
+   * snapshot if one exists or a live-computed estimate otherwise — so the
+   * employee's own dashboard always shows exactly `count` periods instead of
+   * however many happen to have been snapshotted.
+   */
+  async findRecentPerformanceScoreHistoryForEmployee(
+    employeeId: string,
+    count = 4,
+  ): Promise<PerformanceScorePeriod[]> {
+    const periods = lastNHalfYearPeriods(count);
+    const results: PerformanceScorePeriod[] = [];
+    for (const { year, half } of periods) {
+      const record = await this.recordRepository.findOne({ where: { employeeId, year, half } });
+      results.push(record ? this.toDto(record) : await this.buildLiveDto(employeeId, year, half));
+    }
+    return results;
+  }
+
+  /**
+   * Keeps an already-frozen period's contributionPoints (and totalScore) in
+   * sync when a contribution_records entry lands inside its date range —
+   * called by ContributionService after every create/update/remove. A no-op
+   * for periods that were never snapshotted, since those are always
+   * live-computed on read anyway.
+   */
+  async recalculateContributionPointsForPeriod(
+    employeeId: string,
+    year: number,
+    half: PerformancePeriodHalf,
+  ): Promise<void> {
+    const record = await this.recordRepository.findOne({ where: { employeeId, year, half } });
+    if (!record) {
+      return;
+    }
+
+    const { periodStart, periodEnd } = periodBounds(year, half);
+    const contributionRecords = await this.contributionService.findForEmployee(employeeId);
+    const contributionPoints = round2(
+      contributionRecords
+        .filter((r) => r.recordDate >= periodStart && r.recordDate <= periodEnd)
+        .reduce((sum, r) => sum + Number(r.points), 0) * CONTRIBUTION_WEIGHT,
+    );
+
+    record.contributionPoints = contributionPoints;
+    record.totalScore = round2(Number(record.technicalPoint) + contributionPoints + Number(record.certificatePoints));
+    await this.recordRepository.save(record);
   }
 
   /**
