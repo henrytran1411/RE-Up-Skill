@@ -288,6 +288,40 @@ export class TasksService {
   }
 
   /**
+   * A taskName already starts with a bracketed hierarchy code — any word
+   * (Epic/US/Task/Bug/ReOpen/Enhance/CR/SubTask/...) followed by dash and
+   * dotted numbers, e.g. "[Epic-1]", "[US-1.1]", "[SubTask-3.2.2.1]".
+   * Deliberately not a fixed word list — real data already includes types
+   * like "SubTask" beyond the ones named in this feature's spec, and a
+   * closed list would otherwise treat an already-prefixed name as bare and
+   * re-prefix it every time this runs.
+   */
+  private static readonly SUMMARY_PREFIX_PATTERN = /^\[[A-Za-z]+-[\d.]+\]/;
+
+  /**
+   * Prepends `[${taskCode}]` to every task's summary (taskName) in the
+   * project that doesn't already start with a recognized
+   * [Epic/US/Task/Bug/ReOpen/Enhance/CR-x.x.x] prefix — e.g. "Fix login bug"
+   * with taskCode "Bug-1.1.1.1" becomes "[Bug-1.1.1.1] Fix login bug". A task
+   * with no taskCode is left untouched, since there's nothing to prefix it
+   * with. Returns how many rows were updated.
+   */
+  async syncTaskNamePrefixesForProject(projectName: string, requester: AuthenticatedUser): Promise<{ updatedCount: number }> {
+    await this.ensurePmManagesProject(requester, projectName);
+    const tasks = await this.taskRepository.find({ where: { projectName } });
+
+    let updatedCount = 0;
+    for (const task of tasks) {
+      if (!task.taskCode || TasksService.SUMMARY_PREFIX_PATTERN.test(task.taskName)) {
+        continue;
+      }
+      await this.taskRepository.update(task.id, { taskName: `[${task.taskCode}] ${task.taskName}` });
+      updatedCount += 1;
+    }
+    return { updatedCount };
+  }
+
+  /**
    * Resolves each task's Jira-sourced blockedByIssues (raw issue-key refs,
    * already captured for every issue type during sync) into blockedByTaskIds
    * — this project's own TaskRecord ids — wherever the blocking issue is

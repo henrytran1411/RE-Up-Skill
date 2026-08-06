@@ -54,3 +54,11 @@ export async function setEpicDependencies(taskId: string, blockedByEpicKeys: str
   const { data } = await apiClient.patch<TaskRecord>(`/tasks/${taskId}/epic-dependencies`, { blockedByEpicKeys });
   return data;
 }
+
+/** Prepends [Epic/US/Task/Bug/ReOpen/Enhance/CR-x.x.x] to any task's summary in the project that doesn't already have a recognized prefix, using that task's own taskCode. */
+export async function syncTaskNamePrefixes(projectName: string): Promise<{ updatedCount: number }> {
+  const { data } = await apiClient.post<{ updatedCount: number }>(
+    `/tasks/projects/${encodeURIComponent(projectName)}/sync-task-name-prefixes`,
+  );
+  return data;
+}

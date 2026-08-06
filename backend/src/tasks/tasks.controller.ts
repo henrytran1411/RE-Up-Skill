@@ -124,6 +124,17 @@ export class TasksController {
     return this.tasksService.getTaskCriticalPath(projectName, user);
   }
 
+  /**
+   * Prepends [Epic/US/Task/Bug/ReOpen/Enhance/CR-x.x.x] to any task's
+   * summary that doesn't already have a recognized prefix, using that
+   * task's own taskCode. A PM only for a project they manage.
+   */
+  @Post('projects/:projectName/sync-task-name-prefixes')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  syncTaskNamePrefixes(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.tasksService.syncTaskNamePrefixesForProject(projectName, user);
+  }
+
   @Patch(':id/complete')
   @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   complete(@Param('id') id: string, @Body() dto: CompleteTaskRecordDto, @CurrentUser() user: AuthenticatedUser) {

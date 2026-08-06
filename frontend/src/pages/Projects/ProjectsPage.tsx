@@ -33,6 +33,7 @@ import {
   PlusOutlined,
   DeleteOutlined,
   ThunderboltOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import {
   fetchAllProjects,
@@ -48,6 +49,7 @@ import {
   updateTask,
   deleteTask,
   setEpicDependencies,
+  syncTaskNamePrefixes,
 } from '../../services/taskService';
 import { fetchAllEmployees } from '../../services/employeeService';
 import { fetchProjectHealth, fetchTaskCriticalPath } from '../../services/projectHealthService';
@@ -172,6 +174,7 @@ export function ProjectsPage() {
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskWithEmployee | null>(null);
   const [savingTask, setSavingTask] = useState(false);
+  const [syncingPrefixes, setSyncingPrefixes] = useState(false);
   const [taskForm] = Form.useForm();
   const [searchText, setSearchText] = useState('');
   const [taskSearchText, setTaskSearchText] = useState('');
@@ -406,6 +409,20 @@ export function ProjectsPage() {
       loadProjects();
     } catch (err) {
       message.error(errorMessage(err, 'Failed to delete task'));
+    }
+  };
+
+  const handleSyncTaskNamePrefixes = async () => {
+    if (!detail) return;
+    setSyncingPrefixes(true);
+    try {
+      const { updatedCount } = await syncTaskNamePrefixes(detail.projectName);
+      message.success(updatedCount > 0 ? `Added a prefix to ${updatedCount} task summar${updatedCount === 1 ? 'y' : 'ies'}` : 'Every task summary already has a prefix');
+      await refreshDetail(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to sync task summary prefixes'));
+    } finally {
+      setSyncingPrefixes(false);
     }
   };
 
@@ -890,6 +907,14 @@ export function ProjectsPage() {
                           <Space style={{ marginBottom: 8 }}>
                             <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateTaskModal}>
                               Add Task
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={<SyncOutlined />}
+                              loading={syncingPrefixes}
+                              onClick={handleSyncTaskNamePrefixes}
+                            >
+                              Sync Summary Prefixes
                             </Button>
                             <Input.Search
                               placeholder="Search by task code, Jira key, or title"
