@@ -47,6 +47,11 @@ export async function deleteProject(projectName: string): Promise<void> {
   await apiClient.delete(`/projects/${encodeURIComponent(projectName)}`);
 }
 
+/** Maps this project onto a real Jira project — the prerequisite step before syncing task summaries to Jira. */
+export async function setProjectJiraMapping(projectName: string, jiraProjectKey: string): Promise<void> {
+  await apiClient.put(`/projects/${encodeURIComponent(projectName)}/jira-mapping`, { jiraProjectKey });
+}
+
 /** Sensitive — HR/Admin only. Used to prefill the ROI screen's inline rate editor. */
 export async function fetchProjectContributionRate(projectName: string, employeeId: string): Promise<number | null> {
   const { data } = await apiClient.get<{ totalSalary: number | null }>(

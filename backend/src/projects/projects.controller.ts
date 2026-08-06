@@ -5,6 +5,7 @@ import { ProjectContributionsService } from './project-contributions.service';
 import { ProjectNotesService } from './project-notes.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpsertProjectDto } from './dto/upsert-project.dto';
+import { SetProjectJiraMappingDto } from './dto/set-project-jira-mapping.dto';
 import { CreateProjectSprintDto } from './dto/create-project-sprint.dto';
 import { UpdateProjectSprintDto } from './dto/update-project-sprint.dto';
 import { SetProjectContributionDto } from './dto/set-project-contribution.dto';
@@ -46,6 +47,13 @@ export class ProjectsController {
   @Roles(Role.ADMIN)
   deleteProject(@Param('name') name: string) {
     return this.projectsService.deleteProject(name);
+  }
+
+  /** Maps this project onto a real Jira project — the prerequisite step before syncing task summaries to Jira. A PM only for a project they manage. */
+  @Put(':name/jira-mapping')
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
+  setJiraMapping(@Param('name') name: string, @Body() dto: SetProjectJiraMappingDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.projectsService.setJiraProjectKey(name, dto.jiraProjectKey, user);
   }
 
   /** Sprints defined for one project — used to populate the Sprint assignment dropdown on each task, and the health check's burndown chart. */

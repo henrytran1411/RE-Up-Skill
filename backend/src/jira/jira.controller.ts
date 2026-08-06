@@ -6,6 +6,7 @@ import { CreateJiraIssueDto } from './dto/create-jira-issue.dto';
 import { PushProjectToJiraDto } from './dto/push-project-to-jira.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
+import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 
 const CSV_UPLOAD_OPTIONS = {
   limits: { fileSize: 1 * 1024 * 1024 },
@@ -117,5 +118,27 @@ export class JiraController {
   @Roles(Role.ADMIN, Role.PM, Role.TECH_LEAD)
   listEpicsAndStories(@Param('projectKey') projectKey: string) {
     return this.jiraService.listEpicsAndStories(projectKey);
+  }
+
+  /**
+   * Pushes every already-in-Jira task's current local Summary out to its
+   * real Jira issue — the Task Management tab's "Sync Task Summaries"
+   * action, open to PM/Tech Lead too (not just Admin), since the tab itself
+   * is. A PM only for a project they manage.
+   */
+  @Post('projects/:projectName/sync-task-summaries')
+  @Roles(Role.ADMIN, Role.PM, Role.TECH_LEAD)
+  syncTaskSummaries(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.jiraService.syncTaskSummariesToJira(projectName, user);
+  }
+
+  /**
+   * Same rule as sync-task-summaries above, for exactly one task — the Task
+   * Management table's per-row "Sync to Jira" action.
+   */
+  @Post('tasks/:taskId/sync-summary')
+  @Roles(Role.ADMIN, Role.PM, Role.TECH_LEAD)
+  syncOneTaskSummary(@Param('taskId') taskId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.jiraService.syncOneTaskSummaryToJira(taskId, user);
   }
 }

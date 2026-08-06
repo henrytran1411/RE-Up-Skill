@@ -17,6 +17,8 @@ export interface ProjectSummary {
   targetEndDate: string | null;
   /** Kanban vs. Agile — Kanban means no Sprint tab. */
   projectBoardType: ProjectBoardType;
+  /** The real Jira project this maps to, if any — a prerequisite for syncing task summaries to Jira. */
+  jiraProjectKey: string | null;
 }
 
 export interface PublicProjectContributor {

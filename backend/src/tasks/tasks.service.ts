@@ -87,6 +87,8 @@ export interface ProjectSummary {
   targetEndDate: string | null;
   /** Kanban vs. Agile — Kanban means the project has no Sprint tab. */
   projectBoardType: ProjectBoardType;
+  /** The real Jira project this maps to, if any — set via PUT /projects/:name/jira-mapping, a prerequisite for syncing task summaries to Jira. */
+  jiraProjectKey: string | null;
 }
 
 export interface PublicProjectContributor {
@@ -288,23 +290,29 @@ export class TasksService {
   }
 
   /**
-   * A taskName already starts with a bracketed hierarchy code — any word
+   * A taskName's leading bracketed hierarchy code, if any — any word
    * (Epic/US/Task/Bug/ReOpen/Enhance/CR/SubTask/...) followed by dash and
-   * dotted numbers, e.g. "[Epic-1]", "[US-1.1]", "[SubTask-3.2.2.1]".
-   * Deliberately not a fixed word list — real data already includes types
-   * like "SubTask" beyond the ones named in this feature's spec, and a
-   * closed list would otherwise treat an already-prefixed name as bare and
-   * re-prefix it every time this runs.
+   * dotted numbers, e.g. "[Epic-1]", "[US-1.1]", "[SubTask-3.2.2.1]", plus
+   * any following space. Deliberately not a fixed word list — real data
+   * already includes types like "SubTask" beyond the ones named in this
+   * feature's spec. Matched (not just tested) so the existing prefix can be
+   * stripped and replaced — taskCode can be reassigned later (e.g. a Jira
+   * re-sync's full taskCode recompute renumbers Epics by creation order), so
+   * a taskName's embedded prefix can go stale and no longer match its own
+   * task's current taskCode; merely checking "has *a* prefix" would leave
+   * that stale text in place forever instead of correcting it.
    */
-  private static readonly SUMMARY_PREFIX_PATTERN = /^\[[A-Za-z]+-[\d.]+\]/;
+  private static readonly SUMMARY_PREFIX_PATTERN = /^\[[A-Za-z]+-[\d.]+\]\s*/;
 
   /**
-   * Prepends `[${taskCode}]` to every task's summary (taskName) in the
-   * project that doesn't already start with a recognized
-   * [Epic/US/Task/Bug/ReOpen/Enhance/CR-x.x.x] prefix — e.g. "Fix login bug"
-   * with taskCode "Bug-1.1.1.1" becomes "[Bug-1.1.1.1] Fix login bug". A task
-   * with no taskCode is left untouched, since there's nothing to prefix it
-   * with. Returns how many rows were updated.
+   * Makes every task's summary (taskName) in the project start with
+   * `[${taskCode}]`, adding it if missing and correcting it if it's stale
+   * (from taskCode having since been reassigned) — e.g. "Fix login bug"
+   * with taskCode "Bug-1.1.1.1" becomes "[Bug-1.1.1.1] Fix login bug", and a
+   * name already carrying a different code, however it appears, gets that
+   * code swapped for the current one. A task with no taskCode is left
+   * untouched, since there's nothing to prefix it with. Returns how many
+   * rows were updated (already-correct rows don't count).
    */
   async syncTaskNamePrefixesForProject(projectName: string, requester: AuthenticatedUser): Promise<{ updatedCount: number }> {
     await this.ensurePmManagesProject(requester, projectName);
@@ -312,10 +320,15 @@ export class TasksService {
 
     let updatedCount = 0;
     for (const task of tasks) {
-      if (!task.taskCode || TasksService.SUMMARY_PREFIX_PATTERN.test(task.taskName)) {
+      if (!task.taskCode) {
         continue;
       }
-      await this.taskRepository.update(task.id, { taskName: `[${task.taskCode}] ${task.taskName}` });
+      const bareName = task.taskName.replace(TasksService.SUMMARY_PREFIX_PATTERN, '').trim();
+      const correctedName = `[${task.taskCode}] ${bareName}`;
+      if (correctedName === task.taskName) {
+        continue;
+      }
+      await this.taskRepository.update(task.id, { taskName: correctedName });
       updatedCount += 1;
     }
     return { updatedCount };
@@ -594,6 +607,7 @@ export class TasksService {
         startDate: project?.startDate ?? null,
         targetEndDate: project?.targetEndDate ?? null,
         projectBoardType: project?.projectBoardType ?? ProjectBoardType.AGILE,
+        jiraProjectKey: project?.jiraProjectKey ?? null,
       };
     });
 
@@ -720,6 +734,7 @@ export class TasksService {
       startDate: project?.startDate ?? null,
       targetEndDate: project?.targetEndDate ?? null,
       projectBoardType: project?.projectBoardType ?? ProjectBoardType.AGILE,
+      jiraProjectKey: project?.jiraProjectKey ?? null,
     };
 
     if (!canViewRoi) {

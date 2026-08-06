@@ -34,6 +34,7 @@ import {
   DeleteOutlined,
   ThunderboltOutlined,
   SyncOutlined,
+  CloudSyncOutlined,
 } from '@ant-design/icons';
 import {
   fetchAllProjects,
@@ -42,6 +43,7 @@ import {
   createProject,
   deleteProject,
   setProjectContributionRate,
+  setProjectJiraMapping,
 } from '../../services/projectService';
 import {
   fetchTasksForProject,
@@ -66,6 +68,8 @@ import {
   updateProjectNote,
   deleteProjectNote,
 } from '../../services/projectNoteService';
+import { fetchJiraProjects, syncTaskSummariesToJira, syncOneTaskSummaryToJira } from '../../services/jiraService';
+import { JiraProjectSummary, TaskSummarySyncResult } from '../../types/jira';
 import { ProjectEffortChart } from '../../components/ProjectEffortChart';
 import { ProjectContributionChart } from '../../components/ProjectContributionChart';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
@@ -124,6 +128,20 @@ function errorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+/** Mirrors JiraService.summarySyncIneligibleReason on the backend — lets the per-row Sync-to-Jira button disable itself with an explanation instead of round-tripping to find out it can't run. */
+function summarySyncIneligibleReason(task: TaskWithEmployee): string | null {
+  if (!task.taskCode) {
+    return 'No taskCode to prefix the summary with.';
+  }
+  if (!task.taskName.startsWith(`[${task.taskCode}]`)) {
+    return `Summary prefix doesn't match taskCode (${task.taskCode}) — run "Sync Summary Prefixes" first.`;
+  }
+  if (task.jiraIssueKey === null || task.jiraIssueKey.startsWith('GEN-')) {
+    return 'No real Jira issue yet — push to Jira first.';
+  }
+  return null;
+}
+
 
 export function ProjectsPage() {
   const { currentEmployee } = useAuth();
@@ -175,6 +193,10 @@ export function ProjectsPage() {
   const [editingTask, setEditingTask] = useState<TaskWithEmployee | null>(null);
   const [savingTask, setSavingTask] = useState(false);
   const [syncingPrefixes, setSyncingPrefixes] = useState(false);
+  const [jiraProjects, setJiraProjects] = useState<JiraProjectSummary[]>([]);
+  const [savingJiraMapping, setSavingJiraMapping] = useState(false);
+  const [syncingSummaries, setSyncingSummaries] = useState(false);
+  const [syncingTaskId, setSyncingTaskId] = useState<string | null>(null);
   const [taskForm] = Form.useForm();
   const [searchText, setSearchText] = useState('');
   const [taskSearchText, setTaskSearchText] = useState('');
@@ -186,6 +208,9 @@ export function ProjectsPage() {
     loadProjects().finally(() => setLoading(false));
     if (canManage || canManageTasks) {
       fetchAllEmployees().then(setEmployees);
+    }
+    if (canManageTasks) {
+      fetchJiraProjects().catch(() => undefined).then((p) => p && setJiraProjects(p));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -423,6 +448,61 @@ export function ProjectsPage() {
       message.error(errorMessage(err, 'Failed to sync task summary prefixes'));
     } finally {
       setSyncingPrefixes(false);
+    }
+  };
+
+  const handleSetJiraMapping = async (jiraProjectKey: string) => {
+    if (!detail) return;
+    setSavingJiraMapping(true);
+    try {
+      await setProjectJiraMapping(detail.projectName, jiraProjectKey);
+      message.success(`Mapped to Jira project ${jiraProjectKey}`);
+      await refreshDetail(detail.projectName);
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to save Jira project mapping'));
+    } finally {
+      setSavingJiraMapping(false);
+    }
+  };
+
+  const describeSummarySync = (result: TaskSummarySyncResult) => {
+    const parts = [`${result.updated} synced`];
+    if (result.failed > 0) parts.push(`${result.failed} failed`);
+    if (result.skipped > 0) parts.push(`${result.skipped} ineligible (no taskCode, mismatched prefix, or not yet in Jira)`);
+    return parts.join(', ');
+  };
+
+  const handleSyncTaskSummaries = async () => {
+    if (!detail) return;
+    setSyncingSummaries(true);
+    try {
+      const result = await syncTaskSummariesToJira(detail.projectName);
+      const describe = describeSummarySync(result);
+      if (result.failed > 0) {
+        message.warning(`Task summary sync: ${describe}`);
+      } else {
+        message.success(`Task summary sync: ${describe}`);
+      }
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to sync task summaries to Jira'));
+    } finally {
+      setSyncingSummaries(false);
+    }
+  };
+
+  const handleSyncOneTaskSummary = async (task: TaskWithEmployee) => {
+    setSyncingTaskId(task.id);
+    try {
+      const result = await syncOneTaskSummaryToJira(task.id);
+      if (result.outcome === 'updated') {
+        message.success(`Synced summary to Jira issue ${result.jiraIssueKey}`);
+      } else {
+        message.error(result.errorMessage ?? 'Failed to sync task summary to Jira');
+      }
+    } catch (err) {
+      message.error(errorMessage(err, 'Failed to sync task summary to Jira'));
+    } finally {
+      setSyncingTaskId(null);
     }
   };
 
@@ -916,6 +996,29 @@ export function ProjectsPage() {
                             >
                               Sync Summary Prefixes
                             </Button>
+                            <Select
+                              size="small"
+                              showSearch
+                              placeholder="Map to Jira project"
+                              style={{ width: 220 }}
+                              value={detail.jiraProjectKey ?? undefined}
+                              onChange={handleSetJiraMapping}
+                              loading={savingJiraMapping}
+                              disabled={savingJiraMapping}
+                              options={jiraProjects.map((p) => ({ value: p.key, label: `${p.name} (${p.key})` }))}
+                              optionFilterProp="label"
+                            />
+                            <Tooltip title={detail.jiraProjectKey ? '' : 'Map this project to a Jira project first'}>
+                              <Button
+                                size="small"
+                                icon={<CloudSyncOutlined />}
+                                loading={syncingSummaries}
+                                disabled={!detail.jiraProjectKey}
+                                onClick={handleSyncTaskSummaries}
+                              >
+                                Sync Task Summaries to Jira
+                              </Button>
+                            </Tooltip>
                             <Input.Search
                               placeholder="Search by task code, Jira key, or title"
                               allowClear
@@ -1047,18 +1150,30 @@ export function ProjectsPage() {
                               },
                               {
                                 title: 'Actions',
-                                render: (_, record: TaskWithEmployee) => (
-                                  <Space>
-                                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditTaskModal(record)} />
-                                    <Popconfirm
-                                      title="Delete this task?"
-                                      description="This cannot be undone."
-                                      onConfirm={() => handleDeleteTask(record)}
-                                    >
-                                      <Button size="small" danger icon={<DeleteOutlined />} />
-                                    </Popconfirm>
-                                  </Space>
-                                ),
+                                render: (_, record: TaskWithEmployee) => {
+                                  const ineligibleReason = summarySyncIneligibleReason(record);
+                                  return (
+                                    <Space>
+                                      <Button size="small" icon={<EditOutlined />} onClick={() => openEditTaskModal(record)} />
+                                      <Tooltip title={ineligibleReason ?? 'Sync this task summary to Jira'}>
+                                        <Button
+                                          size="small"
+                                          icon={<CloudSyncOutlined />}
+                                          loading={syncingTaskId === record.id}
+                                          disabled={ineligibleReason !== null || syncingTaskId === record.id}
+                                          onClick={() => handleSyncOneTaskSummary(record)}
+                                        />
+                                      </Tooltip>
+                                      <Popconfirm
+                                        title="Delete this task?"
+                                        description="This cannot be undone."
+                                        onConfirm={() => handleDeleteTask(record)}
+                                      >
+                                        <Button size="small" danger icon={<DeleteOutlined />} />
+                                      </Popconfirm>
+                                    </Space>
+                                  );
+                                },
                               },
                             ]}
                           />

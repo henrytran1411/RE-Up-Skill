@@ -9,6 +9,8 @@ import {
   JiraProjectSyncSummary,
   JiraSyncLog,
   JiraUserSummary,
+  TaskSummarySyncResult,
+  TaskSummarySyncRow,
 } from '../types/jira';
 import { ProjectBoardType } from '../types/common';
 
@@ -114,5 +116,19 @@ export async function pushProjectToJira(projectName: string, jiraProjectKey: str
 /** Every Epic and User Story already in a Jira project — read-only. */
 export async function fetchJiraEpicsAndStories(jiraProjectKey: string): Promise<JiraEpicOrStory[]> {
   const { data } = await apiClient.get<JiraEpicOrStory[]>(`/jira-sync/projects/${encodeURIComponent(jiraProjectKey)}/epics-and-stories`);
+  return data;
+}
+
+/** Pushes every already-in-Jira task's current local Summary out to its real Jira issue — the project must already be mapped to a Jira project via setProjectJiraMapping. */
+export async function syncTaskSummariesToJira(projectName: string): Promise<TaskSummarySyncResult> {
+  const { data } = await apiClient.post<TaskSummarySyncResult>(
+    `/jira-sync/projects/${encodeURIComponent(projectName)}/sync-task-summaries`,
+  );
+  return data;
+}
+
+/** Same rule as syncTaskSummariesToJira, for exactly one task — the Task Management table's per-row "Sync to Jira" action. */
+export async function syncOneTaskSummaryToJira(taskId: string): Promise<TaskSummarySyncRow> {
+  const { data } = await apiClient.post<TaskSummarySyncRow>(`/jira-sync/tasks/${taskId}/sync-summary`);
   return data;
 }

@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomBytes } from 'node:crypto';
 import { TaskRecord, BlockedByIssueRef } from '../tasks/entities/task-record.entity';
 import { TaskStatus } from '../common/enums/task-status.enum';
 import { ProjectBoardType } from '../common/enums/project-board-type.enum';
+import { Role } from '../common/enums/role.enum';
+import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { JiraSyncLog, JiraSyncStatus } from './entities/jira-sync-log.entity';
 import { JiraConfig } from './entities/jira-config.entity';
 import { UpsertJiraConfigDto } from './dto/upsert-jira-config.dto';
@@ -202,6 +204,25 @@ export interface JiraProjectPushSummary {
   alreadyInJira: number;
   failed: number;
   rows: JiraProjectPushRow[];
+}
+
+/** One already-in-Jira TaskRecord's outcome when syncing its Summary out to the real Jira issue. */
+export interface TaskSummarySyncRow {
+  taskCode: string | null;
+  taskName: string;
+  jiraIssueKey: string;
+  outcome: 'updated' | 'failed';
+  errorMessage: string | null;
+}
+
+export interface TaskSummarySyncResult {
+  projectName: string;
+  jiraProjectKey: string;
+  /** Tasks with no real Jira presence yet (jiraIssueKey null or a synthetic GEN- key) — not touched, since there's no Jira issue to update. Push them to Jira first. */
+  skipped: number;
+  updated: number;
+  failed: number;
+  rows: TaskSummarySyncRow[];
 }
 
 /** Priority has no universal numeric scale in Jira — this is a judgment-call mapping, not a Jira standard. */
@@ -1812,6 +1833,174 @@ export class JiraService {
       alreadyInJira,
       failed,
       rows: resultRows,
+    };
+  }
+
+  /** PM may only sync a project they're the assigned manager of; other mutating roles are unrestricted. */
+  private async ensurePmManagesProject(requester: AuthenticatedUser, projectName: string): Promise<void> {
+    if (requester.role !== Role.PM) {
+      return;
+    }
+    const project = await this.projectsService.findByName(projectName);
+    if (project?.managerId !== requester.employeeId) {
+      throw new ForbiddenException('You can only sync tasks for a project you manage');
+    }
+  }
+
+  /** Overwrites one Jira issue's Summary field — the only field this call touches. Jira returns 204 No Content on success. */
+  private async updateIssueSummary(
+    connection: JiraConnection,
+    issueKey: string,
+    summary: string,
+  ): Promise<{ success: boolean; errorMessage: string | null }> {
+    const baseUrl = connection.baseUrl.replace(/\/$/, '');
+    try {
+      const response = await fetch(`${baseUrl}/rest/api/3/issue/${issueKey}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: this.authHeader(connection),
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fields: { summary } }),
+      });
+      if (response.ok) {
+        return { success: true, errorMessage: null };
+      }
+      const bodyText = await response.text();
+      return { success: false, errorMessage: `Jira update failed (${response.status}): ${bodyText}` };
+    } catch (err) {
+      return { success: false, errorMessage: err instanceof Error ? err.message : 'Unknown error updating the issue' };
+    }
+  }
+
+  /**
+   * Why a task's Summary can't be synced to Jira right now, or null if it
+   * can. Three conditions, all required: it has a taskCode (nothing to
+   * prefix the Summary with otherwise); its Summary's current prefix
+   * actually matches that taskCode (a stale prefix from taskCode having
+   * since been reassigned would otherwise get pushed to Jira as-is — run
+   * "Sync Summary Prefixes" first to fix it locally); and it has a real Jira
+   * issue already (jiraIssueKey set and not a synthetic GEN- key from the
+   * Backlog Generator) — push it to Jira first if not.
+   */
+  private summarySyncIneligibleReason(task: TaskRecord): string | null {
+    if (!task.taskCode) {
+      return 'This task has no taskCode to prefix its summary with.';
+    }
+    if (!task.taskName.startsWith(`[${task.taskCode}]`)) {
+      return `This task's summary prefix doesn't match its current taskCode (${task.taskCode}) — run "Sync Summary Prefixes" first.`;
+    }
+    if (task.jiraIssueKey === null || task.jiraIssueKey.startsWith('GEN-')) {
+      return 'This task has no real Jira issue yet — push it to Jira first.';
+    }
+    return null;
+  }
+
+  /**
+   * Pushes every already-in-Jira, correctly-prefixed task's current local
+   * Summary (taskName) out to its real Jira issue — the gap "Push Project to
+   * Jira" leaves open, since that only ever creates new issues and never
+   * touches one that already has a real jiraIssueKey. Tasks that fail
+   * summarySyncIneligibleReason (no taskCode, a stale/mismatched summary
+   * prefix, or no real Jira issue yet) are skipped rather than pushed as-is.
+   * Requires the project to already be mapped to a Jira project via
+   * ProjectsService.setJiraProjectKey.
+   */
+  async syncTaskSummariesToJira(projectName: string, requester: AuthenticatedUser): Promise<TaskSummarySyncResult> {
+    await this.ensurePmManagesProject(requester, projectName);
+
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before syncing task summaries.');
+    }
+
+    const project = await this.projectsService.findByName(projectName);
+    if (!project?.jiraProjectKey) {
+      throw new BadRequestException(`Map project "${projectName}" to a Jira project before syncing task summaries.`);
+    }
+
+    const rows = await this.taskRepository.find({ where: { projectName } });
+
+    let updated = 0;
+    let failed = 0;
+    let skipped = 0;
+    const resultRows: TaskSummarySyncRow[] = [];
+
+    for (const row of rows) {
+      if (this.summarySyncIneligibleReason(row) !== null || row.jiraIssueKey === null) {
+        skipped += 1;
+        continue;
+      }
+
+      const result = await this.updateIssueSummary(connection, row.jiraIssueKey, row.taskName);
+      if (result.success) {
+        updated += 1;
+      } else {
+        failed += 1;
+      }
+      resultRows.push({
+        taskCode: row.taskCode,
+        taskName: row.taskName,
+        jiraIssueKey: row.jiraIssueKey,
+        outcome: result.success ? 'updated' : 'failed',
+        errorMessage: result.errorMessage,
+      });
+    }
+
+    this.logger.log(
+      `Synced task summaries for project "${projectName}" to Jira project ${project.jiraProjectKey}: ${updated} updated, ${failed} failed, ${skipped} skipped (ineligible)`,
+    );
+
+    return {
+      projectName,
+      jiraProjectKey: project.jiraProjectKey,
+      skipped,
+      updated,
+      failed,
+      rows: resultRows,
+    };
+  }
+
+  /**
+   * Same rule as syncTaskSummariesToJira, but for exactly one task — the
+   * Task Management table's per-row "Sync to Jira" action. Throws (rather
+   * than silently skipping) when the task is ineligible, since this is an
+   * explicit single-task request, not a bulk sweep.
+   */
+  async syncOneTaskSummaryToJira(taskId: string, requester: AuthenticatedUser): Promise<TaskSummarySyncRow> {
+    const task = await this.taskRepository.findOne({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException(`Task ${taskId} not found`);
+    }
+    await this.ensurePmManagesProject(requester, task.projectName);
+
+    const connection = await this.resolveConnection();
+    if (!connection) {
+      throw new BadRequestException('Save your Jira connection (base URL, email, API token) before syncing task summaries.');
+    }
+
+    const project = await this.projectsService.findByName(task.projectName);
+    if (!project?.jiraProjectKey) {
+      throw new BadRequestException(`Map project "${task.projectName}" to a Jira project before syncing task summaries.`);
+    }
+
+    const ineligibleReason = this.summarySyncIneligibleReason(task);
+    if (ineligibleReason !== null || task.jiraIssueKey === null) {
+      throw new BadRequestException(ineligibleReason ?? 'This task has no real Jira issue yet — push it to Jira first.');
+    }
+
+    const result = await this.updateIssueSummary(connection, task.jiraIssueKey, task.taskName);
+    this.logger.log(
+      `Synced task summary for ${task.taskCode} (${task.jiraIssueKey}) in project "${task.projectName}": ${result.success ? 'updated' : 'failed'}`,
+    );
+
+    return {
+      taskCode: task.taskCode,
+      taskName: task.taskName,
+      jiraIssueKey: task.jiraIssueKey,
+      outcome: result.success ? 'updated' : 'failed',
+      errorMessage: result.errorMessage,
     };
   }
 

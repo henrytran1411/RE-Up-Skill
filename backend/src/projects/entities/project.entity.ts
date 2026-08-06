@@ -40,6 +40,10 @@ export class Project {
   @Column({ type: 'enum', enum: ProjectBoardType, default: ProjectBoardType.AGILE })
   projectBoardType: ProjectBoardType;
 
+  /** Which real Jira project this project maps to — set from the Task Management tab before Summary sync can run. Distinct from TaskRecord.jiraIssueKey, which is per-task. */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  jiraProjectKey: string | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

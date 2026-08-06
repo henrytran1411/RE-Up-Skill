@@ -1,10 +1,12 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Project } from './entities/project.entity';
 import { TaskRecord } from '../tasks/entities/task-record.entity';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpsertProjectDto } from './dto/upsert-project.dto';
+import { Role } from '../common/enums/role.enum';
+import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class ProjectsService {
@@ -96,6 +98,32 @@ export class ProjectsService {
       }
       return manager.save(project);
     });
+  }
+
+  /** PM may only manage a project they're the assigned manager of; other mutating roles are unrestricted. */
+  private async ensurePmManagesProject(requester: AuthenticatedUser, projectName: string): Promise<void> {
+    if (requester.role !== Role.PM) {
+      return;
+    }
+    const project = await this.findByName(projectName);
+    if (project?.managerId !== requester.employeeId) {
+      throw new ForbiddenException('You can only manage a project you are the assigned manager of');
+    }
+  }
+
+  /**
+   * Maps this project onto a real Jira project — a prerequisite for syncing
+   * task summaries to Jira (see JiraService.syncTaskSummariesToJira), kept
+   * separate from upsertProject since PM/Tech Lead may set this but not the
+   * revenue/manager fields upsertProject also handles. Creates the Project
+   * row if it doesn't exist yet, same as upsertProject.
+   */
+  async setJiraProjectKey(name: string, jiraProjectKey: string, requester: AuthenticatedUser): Promise<Project> {
+    await this.ensurePmManagesProject(requester, name);
+    let project = await this.findByName(name);
+    project ??= this.projectRepository.create({ name });
+    project.jiraProjectKey = jiraProjectKey;
+    return this.projectRepository.save(project);
   }
 
   /** Blocked while any task record still references this project — remove/reassign those first. */

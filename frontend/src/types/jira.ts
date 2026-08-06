@@ -75,6 +75,25 @@ export interface JiraProjectPushSummary {
   rows: JiraProjectPushRow[];
 }
 
+/** One already-in-Jira task's outcome when syncing its Summary out to the real Jira issue. */
+export interface TaskSummarySyncRow {
+  taskCode: string | null;
+  taskName: string;
+  jiraIssueKey: string;
+  outcome: 'updated' | 'failed';
+  errorMessage: string | null;
+}
+
+export interface TaskSummarySyncResult {
+  projectName: string;
+  jiraProjectKey: string;
+  /** Tasks with no real Jira presence yet — not touched; push them to Jira first. */
+  skipped: number;
+  updated: number;
+  failed: number;
+  rows: TaskSummarySyncRow[];
+}
+
 /** One Epic or User Story already in a Jira project — used by the document-import flow's "list existing Epics/Stories" step. */
 export interface JiraEpicOrStory {
   key: string;
