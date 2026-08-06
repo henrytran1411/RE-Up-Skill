@@ -29,7 +29,13 @@ export class CreateTaskRecordDto {
   @Max(5)
   complexity: number;
 
-  /** Agile-style effort/story points, used to compute project effort share. */
+  /**
+   * Agile-style effort/story points, used to compute project effort share.
+   * Stays @Min(1) here (unlike UpdateTaskRecordDto, which allows 0) since
+   * this DTO has no issueType field — every manually-created task is a
+   * plain leaf, never an Epic/Story/Task-with-Sub-tasks rollup container,
+   * so it should always carry a real, positive estimate.
+   */
   @IsInt()
   @Min(1)
   points: number;

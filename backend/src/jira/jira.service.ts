@@ -158,6 +158,8 @@ export interface JiraSyncSummary {
   tasksWithoutAssignee?: number;
   /** Set only by a single-project sync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). See TasksService.resolveBlockedByTaskIdsForProject. */
   blockedByTaskIdsResolved?: number;
+  /** Set only by a single-project sync — how many Tasks with Sub-tasks had their own estimateHours/actualHours/points zeroed out (rolled up onto instead, like Epic/Story). See TasksService.recalculateTaskRollupsForProject. */
+  taskRollupsRecalculated?: number;
   /** Set only by a single-project sync, when the Sprint field could be resolved — the Project's board type as detected from whether any fetched issue actually carries Sprint data. AGILE hides nothing; KANBAN hides the Sprint tab in the UI. */
   boardTypeDetected?: ProjectBoardType;
 }
@@ -577,10 +579,13 @@ export class JiraService {
    * Resolves `epicKey`/`storyKey` for one issue by walking `hierarchy`:
    * a Story's parent is its Epic; a Task/Bug/Sub-task's parent is its Story
    * (one more hop up to reach the Epic) or, if the team skips the Story
-   * tier, directly its Epic. Returns both null wherever the chain can't be
-   * followed (no parent, parent outside the synced batch, or an
-   * unrecognized parent type like a Sub-task's parent Task) rather than
-   * guessing.
+   * tier, directly its Epic. A Sub-task's parent is normally a Task (Jira's
+   * own data model requires a Sub-task's parent to be a standard issue, not
+   * an Epic/Story directly), so that case walks one hop further up through
+   * the Task to inherit its Epic/Story — a Sub-task belongs to whatever
+   * Epic/Story its parent Task does. Returns both null wherever the chain
+   * still can't be followed (no parent, or parent outside the synced batch)
+   * rather than guessing.
    */
   private resolveEpicAndStoryKey(
     issueType: string | null,
@@ -599,8 +604,23 @@ export class JiraService {
     if (parent.issueType === 'Story') {
       return { epicKey: parent.parentKey, storyKey: parentKey };
     }
-    // Parent is something else (e.g. a Sub-task's parent Task) — not part of the Epic/Story/Task hierarchy we track.
+    if (parent.issueType === 'Task') {
+      // A Sub-task nesting under a Task — inherit the Task's own Epic/Story rather than treating this as unresolvable.
+      return this.resolveEpicAndStoryKey('Task', parent.parentKey, hierarchy);
+    }
     return { epicKey: null, storyKey: null };
+  }
+
+  /** The Task issue this Sub-task's immediate parent is, if any — null for every other issue type or when the parent isn't a Task. */
+  private resolveParentTaskKey(
+    issueType: string | null,
+    parentKey: string | null,
+    hierarchy: Map<string, { issueType: string | null; parentKey: string | null }>,
+  ): string | null {
+    if (issueType !== 'Sub-task' || !parentKey) {
+      return null;
+    }
+    return hierarchy.get(parentKey)?.issueType === 'Task' ? parentKey : null;
   }
 
   /** Maps one Jira issue to the fields TaskRecord cares about. Returns null fields where Jira has no real equivalent (bugCount, pmRating) rather than guessing. `sprintFieldId` is only passed by syncSingleProjectFromJira. */
@@ -611,13 +631,18 @@ export class JiraService {
     sprintFieldId?: string | null,
   ) {
     const issueType = issue.fields.issuetype?.name ?? null;
-    // Per this team's convention, only Task-type issues carry their own points/estimate — Epic and Story roll theirs
-    // up from their children instead, and Bug/Sub-task track only actual hours spent.
-    const isTask = issueType === 'Task';
+    // Per this team's convention, Task and Sub-task carry their own points/estimate — captured here regardless
+    // of whether this Task turns out to have Sub-tasks; if it does, TasksService.recalculateTaskRollupsForProject
+    // (a post-sync step, since a Task's Sub-tasks may sync before or after it in the same batch) zeroes these
+    // right back out, the same "roll up from children instead of carrying its own" treatment Epic/Story get from
+    // buildTaskHierarchy — done to avoid double-counting a Task's own value alongside its Sub-tasks' in every
+    // raw SUM()/reduce() project/employee total elsewhere in this codebase. Bug still tracks only actual hours
+    // spent — unlike Sub-task, it has no reliable real parent link in typical Jira data to roll up onto.
+    const capturesOwnEstimate = issueType === 'Task' || issueType === 'Sub-task';
 
     const storyPoints = issue.fields[storyPointsField];
     let points = 0;
-    if (isTask) {
+    if (capturesOwnEstimate) {
       points = typeof storyPoints === 'number' && storyPoints > 0 ? Math.round(storyPoints) : DEFAULT_POINTS;
     }
 
@@ -626,7 +651,7 @@ export class JiraService {
 
     const originalEstimateSeconds = issue.fields.timetracking?.originalEstimateSeconds;
     let estimateHours = 0;
-    if (isTask) {
+    if (capturesOwnEstimate) {
       estimateHours = originalEstimateSeconds ? Math.round((originalEstimateSeconds / 3600) * 100) / 100 : DEFAULT_ESTIMATE_HOURS;
     }
 
@@ -636,7 +661,9 @@ export class JiraService {
     const status = mapJiraStatusToTaskStatus(issue.fields.status?.name);
     const completedAt = status === TaskStatus.COMPLETED && issue.fields.resolutiondate ? issue.fields.resolutiondate.slice(0, 10) : null;
 
-    const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, issue.fields.parent?.key ?? null, hierarchy);
+    const parentKey = issue.fields.parent?.key ?? null;
+    const { epicKey, storyKey } = this.resolveEpicAndStoryKey(issueType, parentKey, hierarchy);
+    const parentTaskKey = this.resolveParentTaskKey(issueType, parentKey, hierarchy);
     const jiraSprintHistory = sprintFieldId ? this.pickAllSprints(issue.fields[sprintFieldId]) : [];
 
     return {
@@ -655,6 +682,7 @@ export class JiraService {
       blockedByIssues: this.findBlockingIssues(issue),
       epicKey,
       storyKey,
+      parentTaskKey,
       jiraSprintHistory,
     };
   }
@@ -900,6 +928,7 @@ export class JiraService {
       blockedByIssues: mapped.blockedByIssues,
       epicKey: mapped.epicKey,
       storyKey: mapped.storyKey,
+      parentTaskKey: mapped.parentTaskKey,
       ...(projectSprintId !== undefined ? { projectSprintId, sprintHistoryIds } : {}),
     };
 
@@ -1177,6 +1206,7 @@ export class JiraService {
     if (projectName && (summary.tasksCreated > 0 || summary.tasksUpdated > 0)) {
       summary.taskCodesAssigned = await this.taskCodeService.assignTaskCodesForProject(projectName);
       summary.blockedByTaskIdsResolved = await this.tasksService.resolveBlockedByTaskIdsForProject(projectName);
+      summary.taskRollupsRecalculated = await this.tasksService.recalculateTaskRollupsForProject(projectName);
     }
 
     // Board type is derived from the raw fetch, not from what got persisted — a Kanban board with every
@@ -1192,7 +1222,7 @@ export class JiraService {
     }
 
     this.logger.log(
-      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} with no owner mapped, synced anyway under the placeholder), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned, ${summary.blockedByTaskIdsResolved ?? 0} task(s) got blockedByTaskIds resolved, board type detected: ${summary.boardTypeDetected ?? 'unknown'}`,
+      `Jira single-project sync (${projectKey}) ${summary.status}: ${summary.issuesFetched} fetched, ${summary.tasksCreated} created, ${summary.tasksUpdated} updated, ${summary.tasksSkipped} skipped (${summary.tasksWithoutAssignee ?? 0} with no owner mapped, synced anyway under the placeholder), ${summary.employeesCreated?.length ?? 0} employee(s) auto-created, ${summary.sprintsCreated ?? 0} sprint(s) created, ${summary.tasksAssignedToSprint ?? 0} task(s) assigned to a sprint, ${summary.taskCodesAssigned ?? 0} task code(s) assigned, ${summary.blockedByTaskIdsResolved ?? 0} task(s) got blockedByTaskIds resolved, ${summary.taskRollupsRecalculated ?? 0} task(s) had estimate/actual/points zeroed out in favor of a Sub-task rollup, board type detected: ${summary.boardTypeDetected ?? 'unknown'}`,
     );
     await this.saveLog(startedAt, summary);
     return summary;

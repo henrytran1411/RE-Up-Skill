@@ -378,6 +378,58 @@ export class TasksService {
   }
 
   /**
+   * A Task with 1+ Sub-tasks (matched by TaskRecord.parentTaskKey, resolved
+   * during Jira sync — see JiraService.resolveParentTaskKey) no longer
+   * carries its own independently-sourced estimateHours/actualHours/points —
+   * they're zeroed out (points/estimateHours to 0, actualHours to null),
+   * exactly the same "roll up from children instead of carrying its own"
+   * treatment Epic/Story already get, extended one level down. This is
+   * deliberately NOT "store the sum on the Task too": every project/employee
+   * total in this codebase (findProjectOverview, findAllProjectsOverview,
+   * findProjectHistoryForEmployee, toEmployeeTaskScore, ...) does a raw
+   * SUM()/reduce() over every TaskRecord row with no issueType filtering —
+   * if the Task also stored the sum, its Sub-tasks' points/hours would be
+   * counted twice in every one of those. The Task's effective total is
+   * still shown correctly wherever it's read through the hierarchy — see
+   * buildTaskHierarchy's rollupPoints/rollupEstimateHours/rollupActualHours,
+   * computed live from children the same way it already is for Epic/Story.
+   * A Task with no Sub-tasks is left untouched — it keeps whatever value it
+   * was directly given. Called once per Jira sync — see
+   * JiraService.syncSingleProjectFromJira — after every issue in the batch
+   * has been persisted, since a Task's Sub-tasks may sync before or after
+   * it in the same batch. Returns how many Tasks were (re)zeroed
+   * (already-zeroed ones don't count).
+   */
+  async recalculateTaskRollupsForProject(projectName: string): Promise<number> {
+    const tasks = await this.taskRepository.find({ where: { projectName } });
+    const taskByJiraKey = new Map(
+      tasks.filter((t) => t.issueType === 'Task' && t.jiraIssueKey !== null).map((t) => [t.jiraIssueKey as string, t]),
+    );
+
+    const parentKeysWithSubtasks = new Set(
+      tasks.filter((t) => t.issueType === 'Sub-task' && t.parentTaskKey !== null).map((t) => t.parentTaskKey as string),
+    );
+
+    let updatedCount = 0;
+    for (const parentTaskKey of parentKeysWithSubtasks) {
+      const task = taskByJiraKey.get(parentTaskKey);
+      if (!task) {
+        continue; // parent Task not in this project (or not a Task) — nothing to zero out
+      }
+
+      if (task.estimateHours === 0 && task.actualHours === null && task.points === 0) {
+        continue;
+      }
+      task.estimateHours = 0;
+      task.actualHours = null;
+      task.points = 0;
+      await this.taskRepository.save(task);
+      updatedCount += 1;
+    }
+    return updatedCount;
+  }
+
+  /**
    * Sets which other Epics (by their own jiraIssueKey) must finish before
    * this one can — the input the health check's longest-chain critical-path
    * calculation runs on. Any existing blockedByIssues entries that don't

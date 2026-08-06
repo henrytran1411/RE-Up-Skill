@@ -35,8 +35,9 @@ export class UpdateTaskRecordDto {
   @IsOptional()
   complexity?: number;
 
+  /** 0 is valid here (unlike CreateTaskRecordDto) — Epic/Story/a Task with Sub-tasks legitimately store 0, rolling their real total up from children instead (see TasksService.recalculateTaskRollupsForProject). */
   @IsInt()
-  @Min(1)
+  @Min(0)
   @IsOptional()
   points?: number;
 

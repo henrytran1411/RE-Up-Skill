@@ -38,33 +38,74 @@ export function progressPercent(row: TaskTreeRow): number {
 }
 
 /**
- * Groups tasks into an Epic -> User Story -> Task tree for an expandable
- * table: Epics show on first load, expanding one reveals its Stories,
- * expanding a Story reveals its Tasks. Bug/Sub-task issues nest as leaves
- * the same way Tasks do. A leaf linked straight to an Epic (no Story) nests
- * directly under it; anything that can't be matched to a parent (ad-hoc
- * tasks, or a dangling epicKey/storyKey) surfaces as a flat top-level row
- * instead of being dropped.
+ * Groups tasks into an Epic -> User Story -> Task -> Sub-task tree for an
+ * expandable table: Epics show on first load, expanding one reveals its
+ * Stories, expanding a Story reveals its Tasks/Bugs, and expanding a Task
+ * reveals its own Sub-tasks (matched by TaskRecord.parentTaskKey — see
+ * JiraService.resolveParentTaskKey). Bug nests as a flat leaf the same way
+ * it always has, since it has no reliable real parent link the way Sub-task
+ * does. A leaf linked straight to an Epic (no Story) nests directly under
+ * it; anything that can't be matched to a parent (ad-hoc tasks, a dangling
+ * epicKey/storyKey, or a Sub-task whose parent Task isn't in this project)
+ * surfaces as a flat top-level row instead of being dropped.
  *
- * Per this team's convention, only Task issues carry real points/estimate
- * hours — Epic/Story/Bug/Sub-task all store 0 for those two fields. Epic
- * and Story rows show the sum of their descendants' points/estimateHours/
- * actualHours instead of their own (0) stored value; Bug/Sub-task keep
- * their own real actualHours, which still rolls up into their parent
- * Story/Epic alongside Task's.
+ * Per this team's convention, Epic/Story/Bug store 0 (or null for
+ * actualHours) for points/estimate hours and show the sum of their
+ * descendants' points/estimateHours/actualHours instead — and so does a
+ * Task once it has Sub-tasks of its own (TasksService.recalculateTaskRollupsForProject
+ * zeroes the Task's own fields after every Jira sync specifically so this
+ * rollup is the only place the total shows up — storing the sum on the Task
+ * too would double-count it in every raw points/hours total elsewhere).
  */
 export function buildTaskHierarchy(tasks: TaskWithEmployee[]): TaskTreeRow[] {
   const epics = tasks.filter((t) => t.issueType === 'Epic');
   const stories = tasks.filter((t) => t.issueType === 'Story');
   const leaves = tasks.filter((t) => t.issueType !== 'Epic' && t.issueType !== 'Story');
 
+  const subtasksByParentTaskKey = new Map<string, TaskWithEmployee[]>();
+  for (const l of leaves) {
+    if (l.issueType !== 'Sub-task' || !l.parentTaskKey) {
+      continue;
+    }
+    const list = subtasksByParentTaskKey.get(l.parentTaskKey) ?? [];
+    list.push(l);
+    subtasksByParentTaskKey.set(l.parentTaskKey, list);
+  }
+
+  // A Sub-task inherits its parent Task's own epicKey/storyKey (see JiraService.resolveEpicAndStoryKey), so
+  // without this exclusion it would match a Story's/Epic's childLeaves filter too and render twice — once
+  // nested under its parent Task below, and once again as that Task's flat sibling.
+  const taskKeysPresent = new Set(
+    leaves.filter((l) => l.issueType === 'Task' && l.jiraIssueKey !== null).map((l) => l.jiraIssueKey as string),
+  );
+  const isNestedUnderTask = (l: TaskWithEmployee): boolean =>
+    l.issueType === 'Sub-task' && l.parentTaskKey !== null && taskKeysPresent.has(l.parentTaskKey);
+
   const usedStoryIds = new Set<string>();
   const usedLeafIds = new Set<string>();
+  const usedSubtaskIds = new Set<string>();
 
-  const toLeafRow = (t: TaskWithEmployee): TaskTreeRow => ({ ...t });
+  const toLeafRow = (t: TaskWithEmployee): TaskTreeRow => {
+    const childSubtasks = t.issueType === 'Task' && t.jiraIssueKey ? subtasksByParentTaskKey.get(t.jiraIssueKey) : undefined;
+    if (!childSubtasks || childSubtasks.length === 0) {
+      return { ...t };
+    }
+    childSubtasks.forEach((s) => usedSubtaskIds.add(s.id));
+    const children = childSubtasks.map((s) => ({ ...s }));
+    return {
+      ...t,
+      children,
+      rollupPoints: sumRollup(children, 'points'),
+      rollupEstimateHours: sumRollup(children, 'estimateHours'),
+      rollupActualHours: sumRollup(children, 'actualHours'),
+      rollupCompletedPoints: sumCompletedPointsRollup(children),
+    };
+  };
 
   const toStoryRow = (story: TaskWithEmployee): TaskTreeRow => {
-    const childLeaves = leaves.filter((l) => story.jiraIssueKey !== null && l.storyKey === story.jiraIssueKey);
+    const childLeaves = leaves.filter(
+      (l) => story.jiraIssueKey !== null && l.storyKey === story.jiraIssueKey && !isNestedUnderTask(l),
+    );
     childLeaves.forEach((l) => usedLeafIds.add(l.id));
     const children = childLeaves.map(toLeafRow);
     return {
@@ -81,7 +122,7 @@ export function buildTaskHierarchy(tasks: TaskWithEmployee[]): TaskTreeRow[] {
     const childStories = stories.filter((s) => epic.jiraIssueKey !== null && s.epicKey === epic.jiraIssueKey);
     childStories.forEach((s) => usedStoryIds.add(s.id));
     const directLeaves = leaves.filter(
-      (l) => epic.jiraIssueKey !== null && l.epicKey === epic.jiraIssueKey && !l.storyKey,
+      (l) => epic.jiraIssueKey !== null && l.epicKey === epic.jiraIssueKey && !l.storyKey && !isNestedUnderTask(l),
     );
     directLeaves.forEach((l) => usedLeafIds.add(l.id));
 
@@ -99,7 +140,9 @@ export function buildTaskHierarchy(tasks: TaskWithEmployee[]): TaskTreeRow[] {
   });
 
   const orphanStoryRows = stories.filter((s) => !usedStoryIds.has(s.id)).map(toStoryRow);
-  const orphanLeafRows = leaves.filter((l) => !usedLeafIds.has(l.id)).map(toLeafRow);
+  const orphanLeafRows = leaves
+    .filter((l) => !usedLeafIds.has(l.id) && !usedSubtaskIds.has(l.id) && !isNestedUnderTask(l))
+    .map(toLeafRow);
 
   return [...epicRows, ...orphanStoryRows, ...orphanLeafRows];
 }

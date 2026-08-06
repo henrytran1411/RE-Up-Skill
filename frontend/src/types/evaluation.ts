@@ -60,6 +60,8 @@ export interface TaskRecord {
   epicKey: string | null;
   /** The User Story this Task/Bug/Sub-task's immediate parent is (that Story's own jiraIssueKey) — null for Epics, Stories themselves, and leaves linked directly to an Epic with no Story in between. */
   storyKey: string | null;
+  /** The Task this Sub-task's immediate parent is (that Task's own jiraIssueKey) — null for every other issue type. */
+  parentTaskKey: string | null;
 }
 
 /** What `GET /tasks/projects/:projectName/tasks` returns — a task with its assignee joined in. */

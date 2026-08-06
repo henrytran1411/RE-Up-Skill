@@ -122,6 +122,18 @@ export class TaskRecord {
   @Column({ type: 'varchar', length: 50, nullable: true })
   storyKey: string | null;
 
+  /**
+   * The Task issue this Sub-task's immediate parent is — that Task's own
+   * `jiraIssueKey`. Unlike Bug (usually standalone in Jira, not literally
+   * sub-tasked), a Sub-task's real parent link is reliable, so TaskCodeService
+   * reuses the parent Task's exact Epic.Story.Task numbers for the {e}.{s}.{t}
+   * part of the Sub-task's own code (`SubTask-{e}.{s}.{t}.{n}`, {n} counting
+   * Sub-tasks under that same parent) instead of approximating {t} by
+   * creation order. Null for every issue type except Sub-task.
+   */
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  parentTaskKey: string | null;
+
   /** Which project sprint (see ProjectSprint.id) this task was planned/worked in. Used for the project health check's burndown chart — null if not assigned to a sprint. Not an enforced FK — same loose-reference style as Project.managerId. */
   @Column({ type: 'uuid', nullable: true })
   projectSprintId: string | null;

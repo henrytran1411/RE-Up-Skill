@@ -60,6 +60,8 @@ export interface JiraSyncSummary {
   tasksWithoutAssignee?: number;
   /** Set only by runJiraSingleProjectSync — how many tasks got blockedByTaskIds resolved from Jira's own "is blocked by" issue links (a task can be blocked by more than one other task). */
   blockedByTaskIdsResolved?: number;
+  /** Set only by runJiraSingleProjectSync — how many Tasks with Sub-tasks had their own estimateHours/actualHours/points zeroed out (rolled up onto instead, like Epic/Story). */
+  taskRollupsRecalculated?: number;
   /** Set only by runJiraSingleProjectSync, when the Sprint field could be resolved — the Project's board type as detected from whether any fetched issue actually carries Sprint data. KANBAN hides the Sprint tab. */
   boardTypeDetected?: ProjectBoardType;
 }
