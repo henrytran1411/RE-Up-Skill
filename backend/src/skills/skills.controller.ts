@@ -14,7 +14,7 @@ export class SkillsController {
   constructor(private readonly skillsService: SkillsService) {}
 
   @Post()
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   createSkill(@Body() dto: CreateSkillDto) {
     return this.skillsService.createSkill(dto);
   }
@@ -26,13 +26,13 @@ export class SkillsController {
    * already occupy that exact one-segment shape for skill-history entries.
    */
   @Patch('catalog/:id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   updateSkill(@Param('id') id: string, @Body() dto: UpdateSkillDto) {
     return this.skillsService.updateSkill(id, dto);
   }
 
   @Delete('catalog/:id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   deleteSkill(@Param('id') id: string) {
     return this.skillsService.deleteSkill(id);
   }
@@ -104,9 +104,9 @@ export class SkillsController {
     return this.skillsService.declareSkill(user.employeeId, dto);
   }
 
-  /** PM/HR add a skill-history entry on behalf of another employee (e.g. backfilling from a resume). */
+  /** PM adds a skill-history entry on behalf of another employee (e.g. backfilling from a resume). */
   @Post('employees/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   declareForEmployee(
     @Param('employeeId') employeeId: string,
     @Body() dto: DeclareEmployeeSkillDto,

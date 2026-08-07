@@ -15,9 +15,9 @@ export class BenchTimeController {
     return this.benchTimeService.create(user.employeeId, dto);
   }
 
-  /** PM/HR log bench activity on behalf of another employee (e.g. backfilling known bench time). */
+  /** PM logs bench activity on behalf of another employee (e.g. backfilling known bench time). */
   @Post('employees/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   createForEmployee(@Param('employeeId') employeeId: string, @Body() dto: CreateBenchLogDto) {
     return this.benchTimeService.create(employeeId, dto);
   }
@@ -34,13 +34,13 @@ export class BenchTimeController {
   }
 
   @Get('employee/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {
     return this.benchTimeService.findForEmployee(employeeId);
   }
 
   @Get('alerts/idle')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findIdleAlerts() {
     return this.benchTimeService.findIdleBenchAlerts();
   }

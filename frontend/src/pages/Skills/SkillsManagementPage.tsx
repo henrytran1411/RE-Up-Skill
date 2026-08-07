@@ -39,12 +39,17 @@ import { fetchAllSkillLevels } from '../../services/skillLevelService';
 import { SkillStatusTag } from '../../components/SkillStatusTag';
 import { EmployeeWorkStatusTag } from '../../components/EmployeeWorkStatusTag';
 import { SkillLevelTimeline } from '../../components/SkillLevelTimeline';
+import { useAuth } from '../../context/AuthContext';
 import { EmployeeSkill, Skill } from '../../types/skill';
 import { Employee } from '../../types/employee';
 import { SkillLevel } from '../../types/skillLevel';
-import { EmployeeStatus, SkillStatus, SkillTrack } from '../../types/common';
+import { EmployeeStatus, Role, SkillStatus, SkillTrack } from '../../types/common';
 
 export function SkillsManagementPage() {
+  const { currentEmployee } = useAuth();
+  // HR's role here is to check every employee's skills and their status for hiring/staffing
+  // decisions — not to action them, so HR gets the same table and filters, read-only.
+  const isReadOnly = currentEmployee?.role === Role.HR;
   const [history, setHistory] = useState<EmployeeSkill[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allSkills, setAllSkills] = useState<Skill[]>([]);
@@ -161,9 +166,11 @@ export function SkillsManagementPage() {
     <Card
       title="Skills"
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>
-          Add skill history
-        </Button>
+        !isReadOnly && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>
+            Add skill history
+          </Button>
+        )
       }
     >
       <Space style={{ marginBottom: 16 }} wrap>
@@ -268,29 +275,33 @@ export function SkillsManagementPage() {
                 <Button size="small" icon={<HistoryOutlined />} onClick={() => openTimeline(record)}>
                   Timeline
                 </Button>
-                {(record.status === SkillStatus.START || record.status === SkillStatus.LEARNING) && (
+                {!isReadOnly && (record.status === SkillStatus.START || record.status === SkillStatus.LEARNING) && (
                   <Button size="small" type="primary" onClick={() => handleVerify(record.id)}>
                     Verify
                   </Button>
                 )}
-                {record.status === SkillStatus.VERIFIED && (
+                {!isReadOnly && record.status === SkillStatus.VERIFIED && (
                   <Button size="small" type="primary" onClick={() => handleConfirm(record.id)}>
                     Confirm
                   </Button>
                 )}
-                {record.track === SkillTrack.CURRENT && !record.isPrimary && (
+                {!isReadOnly && record.track === SkillTrack.CURRENT && !record.isPrimary && (
                   <Button size="small" icon={<StarOutlined />} onClick={() => handleSetPrimary(record.id)}>
                     Set Primary
                   </Button>
                 )}
-                <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
-                  Edit
-                </Button>
-                <Popconfirm title="Delete this skill history entry?" onConfirm={() => handleDelete(record.id)}>
-                  <Button size="small" danger icon={<DeleteOutlined />}>
-                    Delete
+                {!isReadOnly && (
+                  <Button size="small" icon={<EditOutlined />} onClick={() => openEditModal(record)}>
+                    Edit
                   </Button>
-                </Popconfirm>
+                )}
+                {!isReadOnly && (
+                  <Popconfirm title="Delete this skill history entry?" onConfirm={() => handleDelete(record.id)}>
+                    <Button size="small" danger icon={<DeleteOutlined />}>
+                      Delete
+                    </Button>
+                  </Popconfirm>
+                )}
               </Space>
             ),
           },

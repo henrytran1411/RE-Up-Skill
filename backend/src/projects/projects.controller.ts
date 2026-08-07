@@ -24,20 +24,20 @@ export class ProjectsController {
     private readonly projectNotesService: ProjectNotesService,
   ) {}
 
-  /** Stand up a new project record — HR/Admin only. Doesn't require any tasks to exist yet. */
+  /** Stand up a new project record — Admin only. Doesn't require any tasks to exist yet. */
   @Post()
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   createProject(@Body() dto: CreateProjectDto) {
     return this.projectsService.createProject(dto);
   }
 
   /**
    * Rename a project and/or set its revenue and/or assign its manager —
-   * HR/Admin only. Deliberately excludes PM: they don't set the revenue
+   * Admin only. Deliberately excludes PM: they don't set the revenue
    * whose resulting ROI they're not allowed to see.
    */
   @Put(':name')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   upsertProject(@Param('name') name: string, @Body() dto: UpsertProjectDto) {
     return this.projectsService.upsertProject(name, dto);
   }
@@ -58,7 +58,7 @@ export class ProjectsController {
 
   /** Sprints defined for one project — used to populate the Sprint assignment dropdown on each task, and the health check's burndown chart. */
   @Get(':name/sprints')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   listSprints(@Param('name') name: string) {
     return this.projectSprintsService.findAllForProject(name);
   }
@@ -95,16 +95,16 @@ export class ProjectsController {
     return this.projectSprintsService.remove(name, id, user);
   }
 
-  /** Sensitive compensation data — HR/Admin only, used to prefill the ROI screen's inline rate editor. */
+  /** Sensitive compensation data — Admin only, used to prefill the ROI screen's inline rate editor. */
   @Get(':name/contributions/:employeeId')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   async getContributionRate(@Param('name') name: string, @Param('employeeId') employeeId: string) {
     return { totalSalary: await this.projectContributionsService.findRate(employeeId, name) };
   }
 
   /** The only way a contribution rate is ever set — entered manually from the ROI screen, not the employee edit form. */
   @Put(':name/contributions/:employeeId')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   async setContributionRate(
     @Param('name') name: string,
     @Param('employeeId') employeeId: string,
@@ -116,7 +116,7 @@ export class ProjectsController {
 
   /** A running journal of PM notes for one project — most recent first. */
   @Get(':name/notes')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   listNotes(@Param('name') name: string) {
     return this.projectNotesService.findAllForProject(name);
   }

@@ -85,4 +85,9 @@ export enum ContributionSource {
   COMPANY_REWARD = 'company_reward',
 }
 
-export const MANAGER_ROLES = [Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN];
+/**
+ * "Manager" here means PM/Tech Lead/Admin. HR is deliberately excluded: HR's access is
+ * scoped narrowly to the read-only Skills page (see SKILL_VIEW_ROLES in AppRouter.tsx),
+ * not general management of employees, projects, or analytics.
+ */
+export const MANAGER_ROLES = [Role.PM, Role.TECH_LEAD, Role.ADMIN];

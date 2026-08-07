@@ -24,8 +24,8 @@ const STANDARD_MONTHLY_HOURS = 160;
 /** Net available working hours in a year: 22 workdays/month x 8h x 12 months, minus 20 days x 8h of annual leave/holidays. */
 const STANDARD_ANNUAL_WORKING_HOURS = 22 * 8 * 12 - 20 * 8;
 
-/** Roles allowed to see revenue/cost/ROI figures. PM is deliberately excluded — see findProjectOverview. */
-const ROI_VISIBLE_ROLES: Role[] = [Role.ADMIN, Role.HR, Role.TECH_LEAD];
+/** Roles allowed to see revenue/cost/ROI figures. HR and Tech Lead are deliberately excluded — see findProjectOverview. */
+const ROI_VISIBLE_ROLES: Role[] = [Role.ADMIN, Role.PM];
 
 /** No progress yet (including no tasks at all) is PENDING; partial progress is PROCESSING; every task done is COMPLETED. */
 function computeProjectStatus(taskCount: number, completedTaskCount: number): ProjectStatus {
@@ -679,9 +679,9 @@ export class TasksService {
    * actually spent (falling back to estimate for still-in-progress tasks);
    * netContribution = revenueShare - cost.
    *
-   * A PM may only view a project they're the assigned manager of, and never
-   * sees revenue/cost/salary/ROI fields even for their own project — they
-   * get the plain effort breakdown only.
+   * A PM may only view a project they're the assigned manager of, but for
+   * that project they see the full revenue/cost/salary/ROI breakdown same as
+   * Admin — HR and Tech Lead get the plain effort breakdown only.
    */
   async findProjectOverview(
     projectName: string,

@@ -22,7 +22,7 @@ export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 
   @Post()
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   create(@Body() dto: CreateEmployeeDto) {
     return this.employeesService.create(dto);
   }
@@ -52,7 +52,7 @@ export class EmployeesController {
 
   /** Junior -> Middle -> Senior timeline, with days spent at each level. */
   @Get(':id/level-history')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findLevelHistory(@Param('id') id: string) {
     return this.employeesService.findLevelHistory(id);
   }
@@ -66,13 +66,13 @@ export class EmployeesController {
 
   /** Backfills a historical predecessor level, ending right when the earliest existing record begins. */
   @Post(':id/level-history/backfill')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   backfillLevelHistory(@Param('id') id: string, @Body() dto: BackfillLevelHistoryDto) {
     return this.employeesService.backfillLevelHistory(id, dto.level, dto.startDate);
   }
 
   @Patch(':id')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateEmployeeDto,

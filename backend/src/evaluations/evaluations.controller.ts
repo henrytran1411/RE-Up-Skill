@@ -10,7 +10,7 @@ export class EvaluationsController {
   constructor(private readonly evaluationsService: EvaluationsService) {}
 
   @Post('run')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   run(@Body() dto: CreateEvaluationDto) {
     return this.evaluationsService.runEvaluation(dto);
   }
@@ -21,7 +21,7 @@ export class EvaluationsController {
   }
 
   @Get('employee/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {
     return this.evaluationsService.findForEmployee(employeeId);
   }

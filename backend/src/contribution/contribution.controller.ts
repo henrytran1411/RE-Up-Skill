@@ -42,13 +42,13 @@ export class ContributionController {
   }
 
   @Get('employee/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {
     return this.contributionService.findForEmployee(employeeId);
   }
 
   @Get('employee/:employeeId/yearly')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findYearlySummaryForEmployee(@Param('employeeId') employeeId: string) {
     return this.contributionService.findYearlySummaryForEmployee(employeeId);
   }

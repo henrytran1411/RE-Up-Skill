@@ -10,7 +10,7 @@ export class SkillLevelsController {
   constructor(private readonly skillLevelsService: SkillLevelsService) {}
 
   @Post()
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   create(@Body() dto: CreateSkillLevelDto) {
     return this.skillLevelsService.create(dto);
   }
@@ -21,13 +21,13 @@ export class SkillLevelsController {
   }
 
   @Patch(':id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   update(@Param('id') id: string, @Body() dto: UpdateSkillLevelDto) {
     return this.skillLevelsService.update(id, dto);
   }
 
   @Delete(':id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   remove(@Param('id') id: string) {
     return this.skillLevelsService.remove(id);
   }

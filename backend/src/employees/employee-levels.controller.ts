@@ -10,7 +10,7 @@ export class EmployeeLevelsController {
   constructor(private readonly employeeLevelsService: EmployeeLevelsService) {}
 
   @Post()
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   create(@Body() dto: CreateEmployeeLevelDto) {
     return this.employeeLevelsService.create(dto);
   }
@@ -21,13 +21,13 @@ export class EmployeeLevelsController {
   }
 
   @Patch(':id')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   update(@Param('id') id: string, @Body() dto: UpdateEmployeeLevelDto) {
     return this.employeeLevelsService.update(id, dto);
   }
 
   @Delete(':id')
-  @Roles(Role.HR, Role.ADMIN)
+  @Roles(Role.ADMIN)
   remove(@Param('id') id: string) {
     return this.employeeLevelsService.remove(id);
   }

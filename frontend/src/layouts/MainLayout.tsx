@@ -6,7 +6,9 @@ import { MANAGER_ROLES, Role } from '../types/common';
 
 const { Header, Sider, Content } = Layout;
 
-const SKILL_CATALOG_ROLES: Role[] = [Role.HR, Role.ADMIN, Role.TECH_LEAD];
+const SKILL_CATALOG_ROLES: Role[] = [Role.ADMIN, Role.TECH_LEAD];
+/** Who sees the Skills page — every manager, plus HR (HR's only surface in the app). */
+const SKILL_VIEW_ROLES: Role[] = [...MANAGER_ROLES, Role.HR];
 const BACKLOG_GENERATOR_ROLES: Role[] = [Role.PM, Role.TECH_LEAD, Role.ADMIN];
 
 export function MainLayout() {
@@ -15,9 +17,10 @@ export function MainLayout() {
   const location = useLocation();
 
   const isManager = currentEmployee ? MANAGER_ROLES.includes(currentEmployee.role as Role) : false;
+  const canViewSkills = currentEmployee ? SKILL_VIEW_ROLES.includes(currentEmployee.role as Role) : false;
   const canManageSkillCatalog = currentEmployee ? SKILL_CATALOG_ROLES.includes(currentEmployee.role as Role) : false;
   const isAdmin = currentEmployee?.role === Role.ADMIN;
-  const canManageEmployeeCatalogs = currentEmployee?.role === Role.HR || isAdmin;
+  const canManageEmployeeCatalogs = isAdmin;
   const canGenerateBacklog = currentEmployee ? BACKLOG_GENERATOR_ROLES.includes(currentEmployee.role as Role) : false;
 
   const menuItems = [
@@ -28,11 +31,11 @@ export function MainLayout() {
     ...(isManager
       ? [
           { key: '/employees', icon: <TeamOutlined />, label: 'Employees' },
-          { key: '/skills', icon: <ToolOutlined />, label: 'Skills' },
           { key: '/projects', icon: <ProjectOutlined />, label: 'Projects' },
           { key: '/analytics', icon: <BarChartOutlined />, label: 'Analytics' },
         ]
       : []),
+    ...(canViewSkills ? [{ key: '/skills', icon: <ToolOutlined />, label: 'Skills' }] : []),
     ...(canGenerateBacklog
       ? [{ key: '/backlog-generator', icon: <ThunderboltOutlined />, label: 'Backlog Generator' }]
       : []),

@@ -10,7 +10,7 @@ export class SkillCategoriesController {
   constructor(private readonly skillCategoriesService: SkillCategoriesService) {}
 
   @Post()
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   create(@Body() dto: CreateSkillCategoryDto) {
     return this.skillCategoriesService.create(dto);
   }
@@ -22,14 +22,14 @@ export class SkillCategoriesController {
 
   /** Renames the category and cascades to every Skill referencing the old name. */
   @Patch(':id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   update(@Param('id') id: string, @Body() dto: UpdateSkillCategoryDto) {
     return this.skillCategoriesService.update(id, dto);
   }
 
   /** Blocked while any skill still references this category. */
   @Delete(':id')
-  @Roles(Role.HR, Role.ADMIN, Role.TECH_LEAD)
+  @Roles(Role.ADMIN, Role.TECH_LEAD)
   remove(@Param('id') id: string) {
     return this.skillCategoriesService.remove(id);
   }

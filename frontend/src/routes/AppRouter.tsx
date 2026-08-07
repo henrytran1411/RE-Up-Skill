@@ -21,7 +21,9 @@ import { MainLayout } from '../layouts/MainLayout';
 import { ProtectedRoute } from './ProtectedRoute';
 import { MANAGER_ROLES, Role } from '../types/common';
 
-const SKILL_CATALOG_ROLES = [Role.HR, Role.ADMIN, Role.TECH_LEAD];
+const SKILL_CATALOG_ROLES = [Role.ADMIN, Role.TECH_LEAD];
+/** Who can see the Skills page — every manager, plus HR (HR's only surface in the app). */
+const SKILL_VIEW_ROLES = [...MANAGER_ROLES, Role.HR];
 export const BACKLOG_GENERATOR_ROLES = [Role.PM, Role.TECH_LEAD, Role.ADMIN];
 
 export function AppRouter() {
@@ -40,16 +42,19 @@ export function AppRouter() {
 
             <Route element={<ProtectedRoute allowedRoles={MANAGER_ROLES} />}>
               <Route path="/employees" element={<EmployeeListPage />} />
-              <Route path="/skills" element={<SkillsManagementPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute allowedRoles={SKILL_VIEW_ROLES} />}>
+              <Route path="/skills" element={<SkillsManagementPage />} />
             </Route>
 
             <Route element={<ProtectedRoute allowedRoles={BACKLOG_GENERATOR_ROLES} />}>
               <Route path="/backlog-generator" element={<BacklogGeneratorPage />} />
             </Route>
 
-            <Route element={<ProtectedRoute allowedRoles={[Role.HR, Role.ADMIN]} />}>
+            <Route element={<ProtectedRoute allowedRoles={[Role.ADMIN]} />}>
               <Route path="/employee-catalogs" element={<EmployeeCatalogsPage />} />
             </Route>
 

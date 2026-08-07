@@ -145,7 +145,7 @@ function summarySyncIneligibleReason(task: TaskWithEmployee): string | null {
 
 export function ProjectsPage() {
   const { currentEmployee } = useAuth();
-  const canManage = currentEmployee?.role === Role.HR || currentEmployee?.role === Role.ADMIN;
+  const canManage = currentEmployee?.role === Role.ADMIN;
   const canDelete = currentEmployee?.role === Role.ADMIN;
   const canManageTasks =
     currentEmployee?.role === Role.PM || currentEmployee?.role === Role.TECH_LEAD || currentEmployee?.role === Role.ADMIN;

@@ -60,7 +60,7 @@ import { Role } from '../../types/common';
 
 export function EmployeeListPage() {
   const { currentEmployee } = useAuth();
-  const canManage = currentEmployee?.role === Role.HR || currentEmployee?.role === Role.ADMIN;
+  const canManage = currentEmployee?.role === Role.ADMIN;
   const canDelete = currentEmployee?.role === Role.ADMIN;
   const isAdmin = currentEmployee?.role === Role.ADMIN;
 

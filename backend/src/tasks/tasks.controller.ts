@@ -31,20 +31,20 @@ export class TasksController {
   }
 
   @Get('employee/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {
     return this.tasksService.findForEmployee(employeeId);
   }
 
   @Get('employee/:employeeId/project-history')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findProjectHistoryForEmployee(@Param('employeeId') employeeId: string) {
     return this.tasksService.findProjectHistoryForEmployee(employeeId);
   }
 
   /** Task score (0-100) for every employee, for tasks completed in `year` (defaults to the current calendar year). */
   @Get('task-score')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findAllTaskScores(@Query('year') year?: string) {
     return this.tasksService.findAllTaskScores(year ? Number(year) : undefined);
   }
@@ -61,13 +61,13 @@ export class TasksController {
   }
 
   @Get('task-score/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findTaskScoreForEmployee(@Param('employeeId') employeeId: string, @Query('year') year?: string) {
     return this.tasksService.findTaskScoreForEmployee(employeeId, year ? Number(year) : undefined);
   }
 
   @Get('task-score/:employeeId/history')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findTaskScoreHistoryForEmployee(@Param('employeeId') employeeId: string) {
     return this.tasksService.findTaskScoreHistoryForEmployee(employeeId);
   }
@@ -77,7 +77,7 @@ export class TasksController {
    * A PM only sees projects they manage; everyone else sees every project.
    */
   @Get('projects')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findAllProjects(@CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.findAllProjectsOverview(user);
   }
@@ -88,7 +88,7 @@ export class TasksController {
    * PM gets a 403 for any project they don't manage.
    */
   @Get('projects/:projectName')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findProjectOverview(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.findProjectOverview(projectName, user);
   }
@@ -98,7 +98,7 @@ export class TasksController {
    * management. A PM only sees this for a project they manage.
    */
   @Get('projects/:projectName/tasks')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findTasksForProject(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.findTasksForProject(projectName, user);
   }
@@ -108,7 +108,7 @@ export class TasksController {
    * only sees this for a project they manage.
    */
   @Get('projects/:projectName/health')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   getProjectHealth(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.getProjectHealth(projectName, user);
   }
@@ -119,7 +119,7 @@ export class TasksController {
    * GET .../health. A PM only sees this for a project they manage.
    */
   @Get('projects/:projectName/critical-path-tasks')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   getTaskCriticalPath(@Param('projectName') projectName: string, @CurrentUser() user: AuthenticatedUser) {
     return this.tasksService.getTaskCriticalPath(projectName, user);
   }

@@ -17,7 +17,7 @@ export class PerformanceController {
   }
 
   @Get('employee/:employeeId')
-  @Roles(Role.PM, Role.TECH_LEAD, Role.HR, Role.ADMIN)
+  @Roles(Role.PM, Role.TECH_LEAD, Role.ADMIN)
   findForEmployee(@Param('employeeId') employeeId: string) {
     return this.performanceService.findPerformanceScoreHistoryForEmployee(employeeId);
   }
