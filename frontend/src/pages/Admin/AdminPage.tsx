@@ -19,6 +19,9 @@ import {
   Divider,
   InputNumber,
   Upload,
+  Row,
+  Col,
+  Statistic,
 } from 'antd';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -66,7 +69,7 @@ import { EmployeeLevel } from '../../types/employeeLevel';
 import { EmployeeRole } from '../../types/employeeRole';
 import { ProjectSummary } from '../../types/project';
 import { TaskWithEmployee } from '../../types/evaluation';
-import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
+import { allTasksProgress, buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { IssueTypeTag } from '../../components/IssueTypeTag';
 
 const DEFAULT_TEMP_PASSWORD = 'Password123!';
@@ -163,6 +166,7 @@ export function AdminPage() {
 
   const employeeLevelOptions = employeeLevels.map((l) => ({ value: l.name, label: l.name }));
   const employeeRoleOptions = employeeRoles.map((r) => ({ value: r.name, label: r.name }));
+  const hierarchyTaskProgress = allTasksProgress(hierarchyTasks);
 
   const loadLogs = () => fetchJiraSyncLogs().then(setLogs);
   const loadEmployees = () => fetchAllEmployees().then(setEmployees);
@@ -921,6 +925,19 @@ export function AdminPage() {
           optionFilterProp="label"
         />
         {selectedHierarchyProject && (
+          <Row gutter={16} style={{ marginBottom: 16 }}>
+            <Col span={6}>
+              <Statistic title="All Tasks % Done" value={hierarchyTaskProgress.percent} suffix="%" />
+            </Col>
+            <Col span={6}>
+              <Statistic
+                title="Points Done / Total"
+                value={`${hierarchyTaskProgress.donePoints} / ${hierarchyTaskProgress.totalPoints}`}
+              />
+            </Col>
+          </Row>
+        )}
+        {selectedHierarchyProject && (
           <Table
             rowKey="id"
             size="small"
@@ -953,12 +970,9 @@ export function AdminPage() {
               },
               {
                 title: 'Progress',
-                render: (_, record: TaskTreeRow) =>
-                  record.children ? (
-                    <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
-                  ) : (
-                    '—'
-                  ),
+                render: (_, record: TaskTreeRow) => (
+                  <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
+                ),
               },
               {
                 title: 'Completed',

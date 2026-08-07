@@ -90,7 +90,7 @@ import { ProjectSprint } from '../../types/projectSprint';
 import { ProjectNote } from '../../types/projectNote';
 import { Employee } from '../../types/employee';
 import { TaskWithEmployee } from '../../types/evaluation';
-import { buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
+import { allTasksProgress, buildTaskHierarchy, progressPercent, TaskTreeRow } from '../../utils/taskHierarchy';
 import { useAuth } from '../../context/AuthContext';
 import { Role, ProjectStatus, ProjectBoardType, TaskStatus } from '../../types/common';
 
@@ -705,6 +705,8 @@ export function ProjectsPage() {
       )
     : projects;
 
+  const taskProgress = allTasksProgress(projectTasks);
+
   const normalizedTaskSearch = taskSearchText.trim().toLowerCase();
   const filteredProjectTasks = normalizedTaskSearch
     ? projectTasks.filter(
@@ -984,6 +986,17 @@ export function ProjectsPage() {
                       label: 'Task Management',
                       children: (
                         <>
+                          <Row gutter={16} style={{ marginBottom: 16 }}>
+                            <Col span={6}>
+                              <Statistic title="All Tasks % Done" value={taskProgress.percent} suffix="%" />
+                            </Col>
+                            <Col span={6}>
+                              <Statistic
+                                title="Points Done / Total"
+                                value={`${taskProgress.donePoints} / ${taskProgress.totalPoints}`}
+                              />
+                            </Col>
+                          </Row>
                           <Space style={{ marginBottom: 8 }}>
                             <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreateTaskModal}>
                               Add Task
@@ -1099,12 +1112,9 @@ export function ProjectsPage() {
                               },
                               {
                                 title: 'Progress',
-                                render: (_, record: TaskTreeRow) =>
-                                  record.children ? (
-                                    <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
-                                  ) : (
-                                    '—'
-                                  ),
+                                render: (_, record: TaskTreeRow) => (
+                                  <Progress percent={progressPercent(record)} size="small" style={{ minWidth: 120 }} />
+                                ),
                               },
                               {
                                 title: 'Status',

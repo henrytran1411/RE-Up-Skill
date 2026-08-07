@@ -30,11 +30,45 @@ function sumCompletedPointsRollup(children: TaskTreeRow[]): number {
   return children.reduce((sum, c) => sum + (c.rollupCompletedPoints ?? leafCompletedPoints(c)), 0);
 }
 
-/** Epic/Story completion percent: rollupCompletedPoints / rollupPoints, 0 when there's nothing to divide by. */
+/**
+ * Completion percent for any row, parent or leaf. A parent (has children):
+ * rollupCompletedPoints / rollupPoints, 0 when there's nothing to divide by.
+ * A leaf has no points-based partial progress — it's either done or not —
+ * so it's 100 once completedAt is set, else 0.
+ */
 export function progressPercent(row: TaskTreeRow): number {
+  if (!row.children) {
+    return row.completedAt !== null ? 100 : 0;
+  }
   const total = row.rollupPoints ?? 0;
   const completed = row.rollupCompletedPoints ?? 0;
   return total > 0 ? Math.round((completed / total) * 100) : 0;
+}
+
+export interface AllTasksProgress {
+  /** donePoints / totalPoints as a whole number percent, 0 when totalPoints is 0. */
+  percent: number;
+  donePoints: number;
+  totalPoints: number;
+}
+
+/**
+ * What fraction of this project's real work is done, weighted by points
+ * (not task count) — points from completed leaf tasks / points from every
+ * leaf task. The project-wide counterpart to progressPercent's per-Epic/Story
+ * view, using the same points-based definition of "done" (leafCompletedPoints)
+ * rather than a flat headcount, so a handful of large completed tasks isn't
+ * dwarfed by many small incomplete ones or vice versa. Epic/Story are
+ * excluded — they're grouping rows with no points of their own, not
+ * individually-completable work. Returns the raw donePoints/totalPoints
+ * alongside the percent so callers can show both (e.g. "40% 80/200").
+ */
+export function allTasksProgress(tasks: TaskWithEmployee[]): AllTasksProgress {
+  const leafTasks = tasks.filter((t) => t.issueType !== 'Epic' && t.issueType !== 'Story');
+  const totalPoints = leafTasks.reduce((sum, t) => sum + t.points, 0);
+  const donePoints = leafTasks.reduce((sum, t) => sum + leafCompletedPoints(t), 0);
+  const percent = totalPoints > 0 ? Math.round((donePoints / totalPoints) * 100) : 0;
+  return { percent, donePoints, totalPoints };
 }
 
 /**
